@@ -1,5 +1,11 @@
 """phase1_progress.py — Phase 1 Reactivation Pilot weekly progress CLI.
 
+CANONICAL query logic lives in scripts/dashboards/phase1_page.py (the
+dashboard). This CLI and scripts/queries/*.sql MIRROR it. As of the
+2026-06-01 consolidation the per-link query here uses the same rich
+two-arm (etsy/own_site) attribution with the Flag-A-fixed shared
+utm_content extraction as the dashboard, so CLI == dashboard == psql.
+
 Runs the same queries as `scripts/queries/phase1_progress.sql` and
 `scripts/queries/phase1_link_performance.sql` and formats them for terminal
 reading. The SQL files use psql-only backslash directives (\\set / \\echo)
@@ -167,7 +173,21 @@ ORDER BY year DESC, visits DESC NULLS LAST, sub_source NULLS FIRST
 # was already correct (uses collected_traffic_source_*) and is unchanged.
 # utm_content is still drawn from event_params (no collected_traffic_source_content
 # column exists in raw.ga4_events). See the SQL file's ATTRIBUTION NOTE.
-LINK_PERFORMANCE_SQL = """
+# Flag-A fix (2026-06-01): single shared utm_content extraction, anchored on
+# the known-good nested form first, used identically in both arms — mirrors
+# scripts/dashboards/phase1_page.py::_UTM_CONTENT_EXPR.
+_UTM_CONTENT_EXPR = """COALESCE(
+             (SELECT ep -> 'value' ->> 'string_value'
+              FROM jsonb_array_elements(e.event_params) ep
+              WHERE ep ->> 'key' = 'content'
+              LIMIT 1),
+             (SELECT ep ->> 'value'
+              FROM jsonb_array_elements(e.event_params) ep
+              WHERE ep ->> 'key' = 'content'
+              LIMIT 1)
+         )"""
+
+LINK_PERFORMANCE_SQL = f"""
 WITH
 links AS (
     SELECT
@@ -177,7 +197,7 @@ links AS (
             ELSE 'own_site'
         END AS destination_kind
     FROM raw.utm_links l
-    WHERE l.utm_campaign = 'phase1_reactivation'
+    WHERE l.utm_campaign = :campaign_tag
 ),
 etsy_attribution AS (
     -- Match against the literal utm values GA4 ingested
@@ -202,16 +222,7 @@ etsy_attribution AS (
          l.base_url !~ '/listing/[0-9]+'
          OR e.page_location ~ ('/listing/' || substring(l.base_url FROM '/listing/([0-9]+)'))
      )
-     AND COALESCE(
-             (SELECT ep -> 'value' ->> 'string_value'
-              FROM jsonb_array_elements(e.event_params) ep
-              WHERE ep ->> 'key' = 'content'
-              LIMIT 1),
-             (SELECT ep ->> 'value'
-              FROM jsonb_array_elements(e.event_params) ep
-              WHERE ep ->> 'key' = 'content'
-              LIMIT 1)
-         ) IS NOT DISTINCT FROM l.utm_content
+     AND {_UTM_CONTENT_EXPR} IS NOT DISTINCT FROM l.utm_content
     GROUP BY l.id
 ),
 own_site_attribution AS (
@@ -228,16 +239,7 @@ own_site_attribution AS (
      AND e.event_date BETWEEN :start AND :end
      AND e.collected_traffic_source_source   IS NOT DISTINCT FROM l.utm_source
      AND e.collected_traffic_source_campaign IS NOT DISTINCT FROM l.utm_campaign
-     AND COALESCE(
-             (SELECT ep ->> 'value'
-              FROM jsonb_array_elements(e.event_params) ep
-              WHERE ep ->> 'key' = 'content'
-              LIMIT 1),
-             (SELECT ep -> 'value' ->> 'string_value'
-              FROM jsonb_array_elements(e.event_params) ep
-              WHERE ep ->> 'key' = 'content'
-              LIMIT 1)
-         ) IS NOT DISTINCT FROM l.utm_content
+     AND {_UTM_CONTENT_EXPR} IS NOT DISTINCT FROM l.utm_content
     GROUP BY l.id
 ),
 attribution AS (
@@ -316,6 +318,7 @@ def main() -> int:
     link_perf = query(LINK_PERFORMANCE_SQL, **{
         "start": PHASE1_START,
         "end": PHASE1_END,
+        "campaign_tag": PHASE1_CAMPAIGN_TAG,
     })
     _print_section(
         "Phase 1 per-link performance (utm.py-generated URLs)",

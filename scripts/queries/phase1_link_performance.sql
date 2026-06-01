@@ -3,6 +3,15 @@
 -- Owner:  Edison (Analytics Engineer)
 -- Window: 2026-05-24 → 2026-08-22
 --
+-- CANONICAL SOURCE: scripts/dashboards/phase1_page.py. This psql file mirrors
+-- that dashboard's per-link query (kept runnable via psql for ad-hoc checks).
+--
+-- FLAG-A FIX (2026-06-01): both the etsy and own_site attribution arms now use
+-- the SAME utm_content COALESCE precedence — nested ep->'value'->>'string_value'
+-- first, then ep->>'value'. Previously the own_site arm reversed the order, a
+-- latent bug if the two JSON forms ever disagreed. Aligned to the known-good
+-- nested form across all four COALESCE blocks (main + summary, both arms).
+--
 -- ATTRIBUTION NOTE (rewritten 2026-05-27, round 4, Edison):
 --   Round-3 (5/24) Etsy attribution joined on
 --     `traffic_source_medium = 'referral' AND traffic_source_source ~
@@ -79,7 +88,7 @@
 \echo === Phase 1 per-link performance (all links generated via utm.py) ===
 \echo NOTE: Both Etsy and own-site destinations attribute per-post on the
 \echo full UTM tuple (utm_source + utm_campaign + utm_content). Source and
-\echo campaign come from GA4's collected_traffic_source_* columns;
+\echo campaign come from the GA4 collected_traffic_source_* columns;
 \echo utm_content comes from event_params (no collected_traffic_source_content
 \echo column exists in raw.ga4_events). Round-4 (2026-05-27) — see file header.
 
@@ -146,11 +155,11 @@ own_site_attribution AS (
      AND e.collected_traffic_source_source   IS NOT DISTINCT FROM l.utm_source
      AND e.collected_traffic_source_campaign IS NOT DISTINCT FROM l.utm_campaign
      AND COALESCE(
-             (SELECT ep ->> 'value'
+             (SELECT ep -> 'value' ->> 'string_value'
               FROM jsonb_array_elements(e.event_params) ep
               WHERE ep ->> 'key' = 'content'
               LIMIT 1),
-             (SELECT ep -> 'value' ->> 'string_value'
+             (SELECT ep ->> 'value'
               FROM jsonb_array_elements(e.event_params) ep
               WHERE ep ->> 'key' = 'content'
               LIMIT 1)
@@ -239,11 +248,11 @@ own_site_attribution AS (
      AND e.collected_traffic_source_source   IS NOT DISTINCT FROM l.utm_source
      AND e.collected_traffic_source_campaign IS NOT DISTINCT FROM l.utm_campaign
      AND COALESCE(
-             (SELECT ep ->> 'value'
+             (SELECT ep -> 'value' ->> 'string_value'
               FROM jsonb_array_elements(e.event_params) ep
               WHERE ep ->> 'key' = 'content'
               LIMIT 1),
-             (SELECT ep -> 'value' ->> 'string_value'
+             (SELECT ep ->> 'value'
               FROM jsonb_array_elements(e.event_params) ep
               WHERE ep ->> 'key' = 'content'
               LIMIT 1)

@@ -3,6 +3,10 @@
 -- Owner:  Edison (Analytics Engineer)
 -- Window: 2026-05-24 → 2026-08-22 (90-day organic pilot; Day 0 prep 2026-05-23)
 --
+-- CANONICAL SOURCE: scripts/dashboards/phase1_page.py. This psql file mirrors
+-- the dashboard's headline / by-platform / by-landing / Etsy-YoY queries
+-- (kept runnable via psql for ad-hoc checks).
+--
 -- Focused on Phase 1 → Phase 2 decision criterion 4:
 --   "Organic-attributed Etsy + eldersninerelics.com referrals cross ~500 visits
 --    over 90 days (~4× YTD baseline of 121)."
