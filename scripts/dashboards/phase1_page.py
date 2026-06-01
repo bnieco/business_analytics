@@ -295,6 +295,24 @@ WHERE category = 'Social Media'
 ORDER BY year DESC, visits DESC NULLS LAST, sub_source NULLS FIRST
 """
 
+# Flag B — GA4 load freshness. Prefer the ops.ga4_freshness view (created
+# 2026-06-01); fall back to a direct MAX(event_date) if the view isn't present
+# (e.g. running against a DB where it hasn't been deployed). days_behind > 1
+# means the daily ga4-load cron likely stalled — the badge warns on the page
+# Brian already views so a dead cron can't hide.
+FRESHNESS_VIEW_SQL = """
+SELECT latest_event_date, last_loaded_at, days_behind
+FROM ops.ga4_freshness
+"""
+
+FRESHNESS_FALLBACK_SQL = """
+SELECT
+    MAX(event_date)                AS latest_event_date,
+    MAX(loaded_at)                 AS last_loaded_at,
+    CURRENT_DATE - MAX(event_date) AS days_behind
+FROM raw.ga4_events
+"""
+
 # ---------------------------------------------------------------------------
 # DB
 # ---------------------------------------------------------------------------
@@ -361,6 +379,20 @@ def query_link_performance() -> list:
 
 def query_etsy_yoy() -> list:
     return _query(ETSY_YOY_SQL)
+
+
+def query_freshness() -> dict:
+    """GA4 freshness. Try the ops.ga4_freshness view; fall back to a direct
+    MAX(event_date) if the view doesn't exist. Never raises — a freshness
+    probe must not be able to break the dashboard."""
+    for sql in (FRESHNESS_VIEW_SQL, FRESHNESS_FALLBACK_SQL):
+        try:
+            rows = _query(sql, {})
+            if rows:
+                return rows[0]
+        except Exception:  # noqa: BLE001 — view-missing or transient; try fallback / give up
+            continue
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -671,6 +703,31 @@ def _render_etsy_yoy(rows: list) -> str:
 </div>"""
 
 
+def _render_freshness_badge(fresh: dict) -> str:
+    """Small topbar badge surfacing GA4 load freshness (Flag B). Warns when
+    days_behind > 1 so a stalled ga4-load cron is visible on the page."""
+    if not fresh:
+        return (
+            "<span class='freshness freshness-unknown' "
+            "title='Could not read GA4 freshness'>GA4: unknown</span>"
+        )
+    db = fresh.get("days_behind")
+    latest = _fmt_date(fresh.get("latest_event_date"))
+    try:
+        db_int = int(db) if db is not None else None
+    except (TypeError, ValueError):
+        db_int = None
+    if db_int is None:
+        cls, label = "freshness-unknown", "GA4: unknown"
+    elif db_int > 1:
+        cls = "freshness-stale"
+        label = f"GA4 stale: {db_int} days behind (latest {latest})"
+    else:
+        cls = "freshness-ok"
+        label = f"GA4 current · latest {latest}"
+    return f"<span class='freshness {cls}' title='days_behind={db}'>{_esc(label)}</span>"
+
+
 # ---------------------------------------------------------------------------
 # Page assembly
 # ---------------------------------------------------------------------------
@@ -682,8 +739,10 @@ def build_html(
     by_landing: list,
     links: list,
     etsy: list,
+    freshness: dict | None = None,
 ) -> str:
     headline_html = _render_headline(headline)
+    freshness_html = _render_freshness_badge(freshness or {})
     platform_html = _render_by_platform(by_platform)
     post_html = _render_by_post(by_post)
     landing_html = _render_by_landing(by_landing)
@@ -789,6 +848,18 @@ def build_html(
   }}
   .refresh-btn:hover {{ background: rgba(255,255,255,0.2); }}
   .refresh-btn.loading {{ opacity: 0.5; pointer-events: none; }}
+  .freshness {{
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 10px;
+    border-radius: 5px;
+    letter-spacing: 0.02em;
+    border: 1px solid transparent;
+    white-space: nowrap;
+  }}
+  .freshness-ok {{ color: var(--good); background: rgba(139,191,139,0.12); border-color: rgba(139,191,139,0.35); }}
+  .freshness-stale {{ color: var(--bad); background: rgba(196,120,120,0.15); border-color: rgba(196,120,120,0.45); }}
+  .freshness-unknown {{ color: var(--sand); background: rgba(202,192,175,0.10); border-color: rgba(202,192,175,0.30); }}
   .content {{ padding: 24px 32px 48px; max-width: 1400px; margin: 0 auto; }}
   .panel {{
     background: var(--surface);
@@ -995,6 +1066,7 @@ function refreshData() {{
   </div>
   <div class="topbar-right">
     <span class="banner">{_esc(banner)}</span>
+    {freshness_html}
     <button id="refreshBtn" class="refresh-btn" onclick="refreshData()">Refresh</button>
   </div>
 </div>
@@ -1022,6 +1094,7 @@ def generate_page() -> str:
         by_landing=query_by_landing(),
         links=query_link_performance(),
         etsy=query_etsy_yoy(),
+        freshness=query_freshness(),
     )
 
 
@@ -1051,7 +1124,16 @@ class Phase1Handler(SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
         if parsed.path == "/healthz":
-            body = b"ok"
+            # ok + GA4 freshness so a stalled cron is visible to monitors too.
+            # Never let the freshness probe turn /healthz into a 500.
+            try:
+                fresh = query_freshness()
+                db = fresh.get("days_behind")
+                latest = fresh.get("latest_event_date")
+                suffix = f" ga4_days_behind={db} latest_event_date={latest}" if fresh else " ga4=unknown"
+            except Exception:  # noqa: BLE001
+                suffix = " ga4=unknown"
+            body = ("ok" + suffix).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", str(len(body)))
