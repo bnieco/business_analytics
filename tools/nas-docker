@@ -1,0 +1,5 @@
+#!/bin/sh
+case "$1" in
+  restart|ps|logs|logs-follow) exec ssh nas-docker "$1" ;;
+  *) echo "usage: nas-docker {restart|ps|logs|logs-follow}" >&2; exit 2 ;;
+esac
