@@ -1,0 +1,11 @@
+services:
+  phase1-dashboard:
+    build: .
+    container_name: phase1-dashboard
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    volumes:
+      - /volume1/docker/phase1-dashboard/phase1_page.py:/app/phase1_page.py:ro
+    environment:
+      - PYTHONUNBUFFERED=1
