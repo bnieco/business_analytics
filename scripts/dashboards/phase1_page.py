@@ -1,13 +1,35 @@
 """Phase 1 Reactivation Pilot dashboard — browser-openable progress page.
 
-Mirrors apply-dashboard's pattern: stdlib http.server + SQLAlchemy + pandas,
-inline HTML. Five panels render the same data as
-scripts/phase1_progress.py (the CLI) — query strings are copied verbatim
-from there so the dashboard and CLI stay in lockstep.
+CANONICAL source of truth for Phase 1 reporting (2026-06-01 consolidation,
+Edison). The CLI scripts/phase1_progress.py and the psql .sql files mirror
+this file's query logic; this file is authoritative.
+
+Stdlib http.server + SQLAlchemy + pandas, inline HTML. Panels:
+    Q1  Headline scoreboard (criterion-4 500-visit floor)
+    Q2  By platform (collected_traffic_source_source)
+    Q3  By post (utm_source + utm_content, top 25)
+    Q4  By landing page (platform + page_location, top 25)   [added 2026-06-01]
+    Q5  Per-link performance — rich two-arm (etsy/own_site) attribution
+    Q6  Per-link summary chips, with etsy/own_site split      [enriched 2026-06-01]
+    Q7  Etsy "Social Media" YoY
+
+ATTRIBUTION (round 4, 2026-05-27): every Phase 1 filter anchors on the
+canonical campaign tag collected_traffic_source_campaign = 'phase1_reactivation'
+(utm.py stamps it on every link). utm_source/campaign come from GA4's
+collected_traffic_source_* columns; utm_content comes from event_params
+(no collected_traffic_source_content column exists in raw.ga4_events).
+The Etsy attribution branch additionally carries a listing-id page-location
+guard so a /listing/N link only attributes visits that landed on /listing/N.
+
+FLAG-A FIX (2026-06-01): utm_content extraction is now a SINGLE shared
+expression (_UTM_CONTENT_EXPR), anchored on the known-good nested form
+ep->'value'->>'string_value' first, used identically in both attribution
+arms — they can no longer drift in COALESCE precedence.
 
 Usage:
-    Set env vars (DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD) and
-    run with --serve. The Dockerfile / compose stack handles that.
+    Set env vars (DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD — the
+    BUSINESS_DB_* namespace is also accepted as a fallback) and run with
+    --serve. The Dockerfile / compose stack handles that on the NAS.
 """
 
 from __future__ import annotations
@@ -49,23 +71,52 @@ def _load_env() -> None:
 
 _load_env()
 
+
+def _db_env(key: str, default: str | None = None) -> str:
+    """Read a DB setting from the DB_* namespace (container) with a
+    BUSINESS_DB_* fallback (dev CLI / db.py). Lets the one canonical file
+    run in both environments without touching the NAS .env."""
+    val = os.environ.get(f"DB_{key}") or os.environ.get(f"BUSINESS_DB_{key}")
+    if val is None:
+        if default is not None:
+            return default
+        raise KeyError(f"DB_{key} (or BUSINESS_DB_{key}) not set")
+    return val
+
+
 DB_URI = (
-    f"postgresql+psycopg2://{os.environ['DB_USER']}:{os.environ['DB_PASSWORD']}"
-    f"@{os.environ['DB_HOST']}:{os.environ['DB_PORT']}/{os.environ['DB_NAME']}"
+    f"postgresql+psycopg2://{_db_env('USER')}:{_db_env('PASSWORD')}"
+    f"@{_db_env('HOST')}:{_db_env('PORT')}/{_db_env('NAME')}"
 )
 PORT = int(os.environ.get("PORT", "8788"))
 
-# Phase 1 window — keep in sync with scripts/queries/phase1_progress.sql
-# and scripts/phase1_progress.py.
+# Phase 1 window — single source of truth. The CLI (scripts/phase1_progress.py)
+# and the psql .sql files duplicate these and carry a sync comment pointing here.
 PHASE1_START = date(2026, 5, 24)
 PHASE1_END = date(2026, 8, 22)
 PHASE1_TARGET_VISITS = 500
 PHASE1_DAYS = 90
+# Canonical Phase 1 campaign tag — utm.py stamps this on every generated link.
+PHASE1_CAMPAIGN_TAG = "phase1_reactivation"
 
 # ---------------------------------------------------------------------------
-# SQL — copied verbatim from scripts/phase1_progress.py so any change in
-# the CLI's queries is a single-file diff to mirror here.
+# SQL — this file is canonical; the CLI + .sql files mirror it.
+# All Phase 1 filters bind :campaign_tag (no hardcoded campaign string).
 # ---------------------------------------------------------------------------
+
+# Flag-A fix: the ONE shared utm_content extraction expression, anchored on
+# the known-good nested form first. Both attribution arms reference this same
+# string so their COALESCE precedence can never drift again.
+_UTM_CONTENT_EXPR = """COALESCE(
+            (SELECT ep -> 'value' ->> 'string_value'
+             FROM jsonb_array_elements(e.event_params) ep
+             WHERE ep ->> 'key' = 'content'
+             LIMIT 1),
+            (SELECT ep ->> 'value'
+             FROM jsonb_array_elements(e.event_params) ep
+             WHERE ep ->> 'key' = 'content'
+             LIMIT 1)
+        )"""
 
 HEADLINE_SQL = """
 WITH visits AS (
@@ -73,7 +124,7 @@ WITH visits AS (
     FROM raw.ga4_events
     WHERE event_date BETWEEN :start AND :end
       AND event_name = 'page_view'
-      AND collected_traffic_source_campaign = 'phase1_reactivation'
+      AND collected_traffic_source_campaign = :campaign_tag
 )
 SELECT
     DATE :start                                                  AS phase1_start,
@@ -107,7 +158,7 @@ SELECT
 FROM raw.ga4_events
 WHERE event_date BETWEEN :start AND :end
   AND event_name = 'page_view'
-  AND collected_traffic_source_campaign = 'phase1_reactivation'
+  AND collected_traffic_source_campaign = :campaign_tag
 GROUP BY 1
 ORDER BY visits DESC
 """
@@ -129,47 +180,106 @@ SELECT
 FROM raw.ga4_events
 WHERE event_date BETWEEN :start AND :end
   AND event_name = 'page_view'
-  AND collected_traffic_source_campaign = 'phase1_reactivation'
+  AND collected_traffic_source_campaign = :campaign_tag
 GROUP BY 1, 2
 ORDER BY visits DESC
 LIMIT 25
 """
 
-LINK_PERFORMANCE_SQL = """
-WITH ga4_attribution AS (
+# Q4 — by landing page (platform + page_location, query string stripped).
+# Ported from the dev CLI 2026-06-01; complements Q3 (destination URL vs post
+# tag). Same campaign-tag filter as everything else.
+BY_LANDING_SQL = """
+SELECT
+    COALESCE(collected_traffic_source_source, '(unset)')         AS platform,
+    regexp_replace(page_location, '\\?.*$', '')                  AS landing_page,
+    COUNT(*)                                                     AS visits,
+    COUNT(DISTINCT user_pseudo_id)                               AS unique_visitors,
+    MIN(event_date)                                              AS first_seen,
+    MAX(event_date)                                              AS last_seen
+FROM raw.ga4_events
+WHERE event_date BETWEEN :start AND :end
+  AND event_name = 'page_view'
+  AND collected_traffic_source_campaign = :campaign_tag
+GROUP BY 1, 2
+ORDER BY visits DESC
+LIMIT 25
+"""
+
+# Q5 — rich two-arm per-link performance (Round-4 fix preserved; Flag-A fixed).
+# etsy + own_site branches share the SAME utm_content extraction (_UTM_CONTENT_EXPR)
+# so they cannot drift. The etsy branch carries the listing-id page-location
+# guard. destination_kind / attribution_mode columns carried across from the
+# dev SQL so the renderer can show the etsy/own_site split.
+LINK_PERFORMANCE_SQL = f"""
+WITH
+links AS (
     SELECT
-        collected_traffic_source_source   AS utm_source,
-        collected_traffic_source_campaign AS utm_campaign,
-        (SELECT ep -> 'value' ->> 'string_value'
-         FROM jsonb_array_elements(event_params) ep
-         WHERE ep ->> 'key' = 'content'
-         LIMIT 1)                          AS utm_content,
-        COUNT(*)                           AS visits,
-        COUNT(DISTINCT user_pseudo_id)     AS unique_visitors,
-        MIN(event_date)                    AS first_visit,
-        MAX(event_date)                    AS last_visit
-    FROM raw.ga4_events
-    WHERE event_date BETWEEN :start AND :end
-      AND event_name = 'page_view'
-      AND collected_traffic_source_campaign = 'phase1_reactivation'
-    GROUP BY 1, 2, 3
+        l.*,
+        CASE
+            WHEN l.base_url ~* '(^|//|\\.)etsy\\.com(/|\\?|$)' THEN 'etsy'
+            ELSE 'own_site'
+        END AS destination_kind
+    FROM raw.utm_links l
+    WHERE l.utm_campaign = :campaign_tag
+),
+etsy_attribution AS (
+    SELECT
+        l.id AS link_id,
+        COUNT(*)                         AS visits,
+        COUNT(DISTINCT e.user_pseudo_id) AS unique_visitors,
+        MIN(e.event_date)                AS first_visit,
+        MAX(e.event_date)                AS last_visit
+    FROM links l
+    JOIN raw.ga4_events e
+      ON l.destination_kind = 'etsy'
+     AND e.event_name = 'page_view'
+     AND e.event_date BETWEEN :start AND :end
+     AND e.collected_traffic_source_source   IS NOT DISTINCT FROM l.utm_source
+     AND e.collected_traffic_source_campaign IS NOT DISTINCT FROM l.utm_campaign
+     AND (
+         l.base_url !~ '/listing/[0-9]+'
+         OR e.page_location ~ ('/listing/' || substring(l.base_url FROM '/listing/([0-9]+)'))
+     )
+     AND {_UTM_CONTENT_EXPR} IS NOT DISTINCT FROM l.utm_content
+    GROUP BY l.id
+),
+own_site_attribution AS (
+    SELECT
+        l.id AS link_id,
+        COUNT(*)                         AS visits,
+        COUNT(DISTINCT e.user_pseudo_id) AS unique_visitors,
+        MIN(e.event_date)                AS first_visit,
+        MAX(e.event_date)                AS last_visit
+    FROM links l
+    JOIN raw.ga4_events e
+      ON l.destination_kind = 'own_site'
+     AND e.event_name = 'page_view'
+     AND e.event_date BETWEEN :start AND :end
+     AND e.collected_traffic_source_source   IS NOT DISTINCT FROM l.utm_source
+     AND e.collected_traffic_source_campaign IS NOT DISTINCT FROM l.utm_campaign
+     AND {_UTM_CONTENT_EXPR} IS NOT DISTINCT FROM l.utm_content
+    GROUP BY l.id
+),
+attribution AS (
+    SELECT * FROM etsy_attribution
+    UNION ALL
+    SELECT * FROM own_site_attribution
 )
 SELECT
+    l.destination_kind,
     l.utm_source,
     l.utm_content,
     l.base_url,
     l.created_at::date              AS link_created,
     l.generated_count,
-    COALESCE(g.visits, 0)           AS visits,
-    COALESCE(g.unique_visitors, 0)  AS unique_visitors,
-    g.first_visit,
-    g.last_visit
-FROM raw.utm_links l
-LEFT JOIN ga4_attribution g
-       ON g.utm_source   IS NOT DISTINCT FROM l.utm_source
-      AND g.utm_campaign IS NOT DISTINCT FROM l.utm_campaign
-      AND g.utm_content  IS NOT DISTINCT FROM l.utm_content
-WHERE l.utm_campaign = 'phase1_reactivation'
+    COALESCE(a.visits, 0)           AS visits,
+    COALESCE(a.unique_visitors, 0)  AS unique_visitors,
+    a.first_visit,
+    a.last_visit,
+    'per_post'                      AS attribution_mode
+FROM links l
+LEFT JOIN attribution a ON a.link_id = l.id
 ORDER BY visits DESC, l.created_at DESC
 """
 
@@ -220,6 +330,7 @@ def _window_params() -> dict:
         "start": PHASE1_START,
         "end": PHASE1_END,
         "target": PHASE1_TARGET_VISITS,
+        "campaign_tag": PHASE1_CAMPAIGN_TAG,
     }
 
 
@@ -236,10 +347,15 @@ def query_by_post() -> list:
     return _query(BY_POST_SQL, _window_params())
 
 
+def query_by_landing() -> list:
+    return _query(BY_LANDING_SQL, _window_params())
+
+
 def query_link_performance() -> list:
     return _query(LINK_PERFORMANCE_SQL, {
         "start": PHASE1_START,
         "end": PHASE1_END,
+        "campaign_tag": PHASE1_CAMPAIGN_TAG,
     })
 
 
@@ -414,6 +530,45 @@ def _render_by_post(rows: list) -> str:
 </div>"""
 
 
+def _render_by_landing(rows: list) -> str:
+    if not rows:
+        body = "<tr class='empty'><td colspan='6'>No landing pages attributed yet.</td></tr>"
+    else:
+        body_parts = []
+        for r in rows:
+            landing = r.get("landing_page") or ""
+            landing_short = landing if len(landing) <= 64 else landing[:61] + "…"
+            body_parts.append(
+                "<tr>"
+                f"<td class='platform'>{_esc(r.get('platform'))}</td>"
+                f"<td class='url'><a href='{_esc(landing)}' target='_blank' rel='noopener' title='{_esc(landing)}'>{_esc(landing_short)}</a></td>"
+                f"<td class='num'>{_fmt_int(r.get('visits'))}</td>"
+                f"<td class='num'>{_fmt_int(r.get('unique_visitors'))}</td>"
+                f"<td class='date'>{_fmt_date(r.get('first_seen'))}</td>"
+                f"<td class='date'>{_fmt_date(r.get('last_seen'))}</td>"
+                "</tr>"
+            )
+        body = "\n".join(body_parts)
+    return f"""
+<div class="panel">
+  <h2>By landing page (platform + destination URL, top 25)</h2>
+  <p class='panel-note'>Where Phase 1 clicks actually landed — query string stripped so listing variations collapse. Complements the by-post view.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Platform</th>
+        <th>Landing page</th>
+        <th class='num'>Visits</th>
+        <th class='num'>Unique</th>
+        <th>First seen</th>
+        <th>Last seen</th>
+      </tr>
+    </thead>
+    <tbody>{body}</tbody>
+  </table>
+</div>"""
+
+
 def _render_link_performance(rows: list) -> str:
     if not rows:
         body = "<tr class='empty'><td colspan='7'>No utm.py-generated links registered yet.</td></tr>"
@@ -423,9 +578,15 @@ def _render_link_performance(rows: list) -> str:
         with_visits = sum(1 for r in rows if int(r.get("visits") or 0) > 0)
         zero = total - with_visits
         total_visits = sum(int(r.get("visits") or 0) for r in rows)
+        # etsy/own_site split — computed from destination_kind (Q6 enrichment
+        # 2026-06-01; no extra query, the rich Q5 already carries the column).
+        etsy_links = sum(1 for r in rows if r.get("destination_kind") == "etsy")
+        own_site_links = sum(1 for r in rows if r.get("destination_kind") == "own_site")
         summary = (
             f"<div class='link-summary'>"
             f"<span><b>{total}</b> links generated</span>"
+            f"<span><b>{etsy_links}</b> Etsy</span>"
+            f"<span><b>{own_site_links}</b> own-site</span>"
             f"<span><b>{with_visits}</b> with visits</span>"
             f"<span class='zero-stat'><b>{zero}</b> zero-visit</span>"
             f"<span><b>{_fmt_int(total_visits)}</b> total attributed visits</span>"
@@ -518,12 +679,14 @@ def build_html(
     headline: dict,
     by_platform: list,
     by_post: list,
+    by_landing: list,
     links: list,
     etsy: list,
 ) -> str:
     headline_html = _render_headline(headline)
     platform_html = _render_by_platform(by_platform)
     post_html = _render_by_post(by_post)
+    landing_html = _render_by_landing(by_landing)
     link_html = _render_link_performance(links)
     etsy_html = _render_etsy_yoy(etsy)
 
@@ -839,6 +1002,7 @@ function refreshData() {{
   {headline_html}
   {platform_html}
   {post_html}
+  {landing_html}
   {link_html}
   {etsy_html}
   <div class="footer">
@@ -855,6 +1019,7 @@ def generate_page() -> str:
         headline=query_headline(),
         by_platform=query_by_platform(),
         by_post=query_by_post(),
+        by_landing=query_by_landing(),
         links=query_link_performance(),
         etsy=query_etsy_yoy(),
     )
