@@ -1,0 +1,81 @@
+{
+  "_meta": {
+    "description": "Hand-extracted data from 12 Etsy Shop Manager Stats 'Referrer detail' PDFs. The PDFs are screenshot-style exports — page 1 of each pagination block is the only data captured. For categories where the PDF page-1 sub-source list does not sum to the dashboard category total, an 'Other (uncaptured)' row is added so per-category sums reconcile to the screenshot totals supplied by Brian.",
+    "source_dir": "/Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync/Documents/Business/Inbox/",
+    "extracted_by": "Edison",
+    "extracted_at": "2026-05-23",
+    "categories_with_sub_source_breakdown": ["Social Media", "Direct & Other", "Etsy Marketing SEO", "Advertising"],
+    "categories_without_sub_source_breakdown": ["Etsy Search", "Etsy App"],
+    "dashboard_category_totals": {
+      "2025": {
+        "Etsy App": 2963,
+        "Etsy Search": 427,
+        "Etsy Marketing SEO": 391,
+        "Direct & Other": 4701,
+        "Social Media": 15800,
+        "Advertising": 1527
+      },
+      "2026": {
+        "Etsy App": 700,
+        "Etsy Search": 127,
+        "Etsy Marketing SEO": 200,
+        "Direct & Other": 152,
+        "Social Media": 121,
+        "Advertising": 614
+      }
+    }
+  },
+  "rows": [
+    {"year": 2025, "category": "Social Media", "sub_source": "m.facebook.com", "visits": 14530, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Social Media.pdf"},
+    {"year": 2025, "category": "Social Media", "sub_source": "www.facebook.com", "visits": 330, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Social Media.pdf"},
+    {"year": 2025, "category": "Social Media", "sub_source": "instagram.com", "visits": 233, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Social Media.pdf"},
+    {"year": 2025, "category": "Social Media", "sub_source": "l.facebook.com", "visits": 49, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Social Media.pdf"},
+    {"year": 2025, "category": "Social Media", "sub_source": "lm.facebook.com", "visits": 18, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Social Media.pdf"},
+    {"year": 2025, "category": "Social Media", "sub_source": "Other (uncaptured)", "visits": 640, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Social Media.pdf", "notes": "Backfill: dashboard category total (15,800) minus sum of captured sub-sources (15,160). Etsy PDF only exported page 1 of paginated source list."},
+
+    {"year": 2025, "category": "Direct & Other", "sub_source": "eldersninerelics-4713.zee.am", "visits": 3064, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Direct and Other.pdf"},
+    {"year": 2025, "category": "Direct & Other", "sub_source": "zee.store", "visits": 392, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Direct and Other.pdf"},
+    {"year": 2025, "category": "Direct & Other", "sub_source": "www.tiktok.com", "visits": 316, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Direct and Other.pdf"},
+    {"year": 2025, "category": "Direct & Other", "sub_source": "duckduckgo.com", "visits": 9, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Direct and Other.pdf"},
+    {"year": 2025, "category": "Direct & Other", "sub_source": "www.aaaa.safeframe.googlesyndication.com/", "visits": 5, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Direct and Other.pdf"},
+    {"year": 2025, "category": "Direct & Other", "sub_source": "Other (uncaptured)", "visits": 915, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Direct and Other.pdf", "notes": "Backfill: dashboard category total (4,701) minus sum of captured sub-sources (3,786). PDF page-1 only."},
+
+    {"year": 2025, "category": "Etsy Marketing SEO", "sub_source": "www.google.com", "visits": 360, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Etsy Marketing and SEO.pdf"},
+    {"year": 2025, "category": "Etsy Marketing SEO", "sub_source": "google.com", "visits": 11, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Etsy Marketing and SEO.pdf"},
+    {"year": 2025, "category": "Etsy Marketing SEO", "sub_source": "messages.google.com", "visits": 5, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Etsy Marketing and SEO.pdf"},
+    {"year": 2025, "category": "Etsy Marketing SEO", "sub_source": "www.etsy.com", "visits": 3, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Etsy Marketing and SEO.pdf"},
+    {"year": 2025, "category": "Etsy Marketing SEO", "sub_source": "www.bing.com", "visits": 3, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Etsy Marketing and SEO.pdf"},
+    {"year": 2025, "category": "Etsy Marketing SEO", "sub_source": "Other (uncaptured)", "visits": 9, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Etsy Marketing and SEO.pdf", "notes": "Backfill: dashboard total (391) minus captured (382). PDF page-1 only."},
+
+    {"year": 2025, "category": "Advertising", "sub_source": "www.etsy.com", "visits": 1527, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Advertising.pdf", "notes": "Advertising == 'Etsy Ads' in the dashboard summary view. Single sub-source matches category total exactly."},
+
+    {"year": 2025, "category": "Etsy Search", "sub_source": null, "visits": 427, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Etsy Search.pdf", "notes": "Etsy Search is itself a singular source — no traffic-source breakdown table in the PDF. Visits = dashboard category total from screenshot."},
+
+    {"year": 2025, "category": "Etsy App", "sub_source": null, "visits": 2963, "date_range_start": "2025-01-01", "date_range_end": "2025-12-31", "source_pdf": "2025 Referrers - Etsy App and other Etsy Pages.pdf", "notes": "Etsy App & other Etsy pages — no sub-source breakdown in PDF. Visits = dashboard category total from screenshot."},
+
+    {"year": 2026, "category": "Social Media", "sub_source": "m.facebook.com", "visits": 88, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Social Media.pdf"},
+    {"year": 2026, "category": "Social Media", "sub_source": "instagram.com", "visits": 10, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Social Media.pdf"},
+    {"year": 2026, "category": "Social Media", "sub_source": "l.instagram.com", "visits": 4, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Social Media.pdf"},
+    {"year": 2026, "category": "Social Media", "sub_source": "l.facebook.com", "visits": 3, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Social Media.pdf"},
+    {"year": 2026, "category": "Social Media", "sub_source": "www.etsy.com", "visits": 3, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Social Media.pdf"},
+    {"year": 2026, "category": "Social Media", "sub_source": "Other (uncaptured)", "visits": 13, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Social Media.pdf", "notes": "Backfill: dashboard total (121) minus captured (108). PDF page-1 only — there is a 'page 2' but it was not in the export."},
+
+    {"year": 2026, "category": "Direct & Other", "sub_source": "www.aaaa.safeframe.googlesyndication.com/", "visits": 3, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Direct and Other.pdf"},
+    {"year": 2026, "category": "Direct & Other", "sub_source": "www.baidu.com", "visits": 1, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Direct and Other.pdf"},
+    {"year": 2026, "category": "Direct & Other", "sub_source": "googleads.g.doubleclick.net", "visits": 1, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Direct and Other.pdf"},
+    {"year": 2026, "category": "Direct & Other", "sub_source": "Other (uncaptured)", "visits": 147, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Direct and Other.pdf", "notes": "Backfill: dashboard total (152) minus captured (5). Large gap — this category is mostly 'true direct' (no referrer header), which Etsy reports as the category total but does not enumerate as a sub-source row."},
+
+    {"year": 2026, "category": "Etsy Marketing SEO", "sub_source": "www.google.com", "visits": 98, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Etsy Marketing and SEO.pdf"},
+    {"year": 2026, "category": "Etsy Marketing SEO", "sub_source": "www.etsy.com", "visits": 86, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Etsy Marketing and SEO.pdf"},
+    {"year": 2026, "category": "Etsy Marketing SEO", "sub_source": "www.aaaa.safeframe.googlesyndication.com/", "visits": 5, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Etsy Marketing and SEO.pdf"},
+    {"year": 2026, "category": "Etsy Marketing SEO", "sub_source": "www.bing.com", "visits": 4, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Etsy Marketing and SEO.pdf"},
+    {"year": 2026, "category": "Etsy Marketing SEO", "sub_source": "search.yahoo.com", "visits": 1, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Etsy Marketing and SEO.pdf"},
+    {"year": 2026, "category": "Etsy Marketing SEO", "sub_source": "Other (uncaptured)", "visits": 6, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Etsy Marketing and SEO.pdf", "notes": "Backfill: dashboard total (200) minus captured (194)."},
+
+    {"year": 2026, "category": "Advertising", "sub_source": "www.etsy.com", "visits": 614, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Advertising.pdf", "notes": "Single sub-source matches category total exactly."},
+
+    {"year": 2026, "category": "Etsy Search", "sub_source": null, "visits": 127, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Etsy Search.pdf", "notes": "Etsy Search — no sub-source breakdown. Visits = dashboard category total."},
+
+    {"year": 2026, "category": "Etsy App", "sub_source": null, "visits": 700, "date_range_start": "2026-01-01", "date_range_end": "2026-05-23", "source_pdf": "2026 Referrers - Etsy App and Other Pages.pdf", "notes": "Etsy App & other Etsy pages — no sub-source breakdown. Visits = dashboard category total."}
+  ]
+}

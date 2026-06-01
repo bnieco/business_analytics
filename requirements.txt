@@ -1,0 +1,10 @@
+psycopg2-binary>=2.9
+sqlalchemy>=2.0
+pandas>=2.2
+matplotlib>=3.8
+seaborn>=0.13
+jupyter>=1.0
+ipykernel>=6.29
+python-dotenv>=1.0
+google-cloud-bigquery>=3.25
+db-dtypes>=1.2

@@ -1,0 +1,10 @@
+.env
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+.vscode/settings.json
+
+# Google Cloud service account keys (never commit)
+*-service-account.json
