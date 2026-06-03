@@ -100,7 +100,7 @@ ETSY_OAUTH_REDIRECT_URI = os.getenv(
 )
 ETSY_REFRESH_TOKEN = os.getenv("ETSY_REFRESH_TOKEN")
 
-OAUTH_SCOPES = "transactions_r listings_r"
+OAUTH_SCOPES = "transactions_r listings_r shops_r"
 AUTHORIZE_URL = "https://www.etsy.com/oauth/connect"
 TOKEN_URL = "https://api.etsy.com/v3/public/oauth/token"
 API_BASE = "https://openapi.etsy.com/v3/application"
@@ -422,20 +422,17 @@ def resolve_shop_id(client: EtsyClient) -> str:
     if ETSY_SHOP_ID:
         return ETSY_SHOP_ID
 
-    # /users/me returns the authenticated user; user_id == shop owner. Then
-    # /users/{user_id}/shops resolves the shop. (Lookup only runs live.)
+    # getMe (/users/me) returns the authenticated user and includes shop_id
+    # directly. Fall back to resolving via owner user_id only if absent.
+    # (Lookup only runs live.)
     me = client.get("/users/me")
-    user_id = me.get("user_id")
-    if not user_id:
-        raise RuntimeError("Could not resolve user_id from /users/me to find shop id.")
-    shops = client.get(f"/users/{user_id}/shops")
-    # getShopsByOwnerUserId returns a single shop object (results may be list).
-    shop_id = None
-    if isinstance(shops, dict):
-        if shops.get("shop_id"):
-            shop_id = shops["shop_id"]
-        elif shops.get("results"):
-            shop_id = shops["results"][0].get("shop_id")
+    shop_id = me.get("shop_id")
+    if not shop_id:
+        # fallback: resolve via owner user_id (getShopByOwnerUserId returns a single Shop)
+        user_id = me.get("user_id")
+        if user_id:
+            shop = client.get(f"/users/{user_id}/shops")
+            shop_id = shop.get("shop_id") if isinstance(shop, dict) else None
     if not shop_id:
         raise RuntimeError("Could not resolve shop_id from the authenticated user's shops.")
     log.info("Resolved shop_id=%s. TODO: persist ETSY_SHOP_ID=%s into .env.", shop_id, shop_id)
@@ -501,7 +498,9 @@ def receipt_to_order_row(r: dict, loaded_at: datetime) -> dict:
         "first_name": first,
         "last_name": last,
         "number_of_items": None,  # derived downstream from transactions if needed
-        "date_shipped": _ts_to_date(r.get("shipped_timestamp")),
+        "date_shipped": _ts_to_date(
+            (r.get("shipments") or [{}])[0].get("shipment_notification_timestamp")
+        ),
         "street_1": (r.get("first_line") or None),
         "street_2": (r.get("second_line") or None),
         "ship_city": r.get("city"),
@@ -540,8 +539,8 @@ def transaction_to_item_row(t: dict, receipt: dict, loaded_at: datetime) -> dict
         "sku": t.get("sku"),
         "variations": json.dumps(variations) if variations else None,
         "sale_date": _ts_to_date(t.get("created_timestamp")),
-        "date_paid": _ts_to_date(receipt.get("created_timestamp")) if receipt.get("is_paid") else None,
-        "date_shipped": _ts_to_date(receipt.get("shipped_timestamp")),
+        "date_paid": _ts_to_date(t.get("paid_timestamp")),
+        "date_shipped": _ts_to_date(t.get("shipped_timestamp")),
         "created_timestamp": t.get("created_timestamp"),
         "_api_loaded_at": loaded_at,
     }
