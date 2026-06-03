@@ -26,7 +26,9 @@ OAuth model
   Access TTL ~1h (regenerated every run, never persisted)
   Refresh TTL ~90 days (the only long-lived secret; rotated -> rewritten to .env;
   the daily job keeps it alive indefinitely)
-  PKCE S256 required. Headers: x-api-key: <keystring> + Authorization: Bearer.
+  PKCE S256 required. API-call headers: x-api-key: <keystring>:<shared_secret>
+  + Authorization: Bearer. (OAuth token endpoint uses bare keystring as the
+  client_id form param and no x-api-key header.)
 
 Usage
 -----
@@ -93,7 +95,7 @@ from db import get_engine  # noqa: E402
 # ---------------------------------------------------------------------------
 
 ETSY_API_KEYSTRING = os.getenv("ETSY_API_KEYSTRING")
-ETSY_SHARED_SECRET = os.getenv("ETSY_SHARED_SECRET")  # noqa: F841 (kept for parity; PKCE flow doesn't use it)
+ETSY_SHARED_SECRET = os.getenv("ETSY_SHARED_SECRET")  # required in every v3 x-api-key header (keystring:secret)
 ETSY_SHOP_ID = os.getenv("ETSY_SHOP_ID")
 ETSY_OAUTH_REDIRECT_URI = os.getenv(
     "ETSY_OAUTH_REDIRECT_URI", "http://localhost:3003/oauth/redirect"
@@ -336,8 +338,15 @@ class EtsyClient:
 
     def __init__(self, access_token: str):
         self.session = requests.Session()
+        # Per the Etsy `essentials/requests` guide, every v3 API request's
+        # x-api-key header must carry the keystring AND shared secret separated
+        # by a colon (`x-api-key: <keystring>:<shared_secret>`). Empirically
+        # confirmed: keystring-only returns 403 ("Shared secret is required in
+        # x-api-key header."), colon format returns 200. (The OAuth token
+        # endpoint differs: it takes a bare keystring as form-body `client_id`
+        # and needs no x-api-key header — see refresh_access_token/cmd_authorize.)
         self.session.headers.update({
-            "x-api-key": ETSY_API_KEYSTRING,
+            "x-api-key": f"{ETSY_API_KEYSTRING}:{ETSY_SHARED_SECRET}",
             "Authorization": f"Bearer {access_token}",
             "Accept": "application/json",
         })
