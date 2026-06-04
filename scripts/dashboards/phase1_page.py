@@ -12,6 +12,12 @@ Stdlib http.server + SQLAlchemy + pandas, inline HTML. Panels:
     Q5  Per-link performance — rich two-arm (etsy/own_site) attribution
     Q6  Per-link summary chips, with etsy/own_site split      [enriched 2026-06-01]
     Q7  Etsy "Social Media" YoY
+    R1  Etsy reviews — avg+count headline, latest-3, per-listing [added 2026-06-04, Task #64]
+    R2  Listing attention — views/favorers + day-over-day delta  [added 2026-06-04, Task #64]
+
+Reviews/attention panels read ops.review_summary / ops.review_recent /
+ops.listing_attention (migration 008) — never raw.* directly — and degrade to
+an empty panel if those views are absent (query_* wrapped in _query_safe).
 
 ATTRIBUTION (round 4, 2026-05-27): every Phase 1 filter anchors on the
 canonical campaign tag collected_traffic_source_campaign = 'phase1_reactivation'
@@ -314,6 +320,66 @@ FROM raw.ga4_events
 """
 
 # ---------------------------------------------------------------------------
+# Reviews + listing-attention (Task #64). Both read ops.* views created in
+# migration 008 (ops.review_summary / ops.review_recent / ops.listing_attention)
+# so the dashboard never touches raw.* directly and agents share the same
+# derived, reviewer-safe projection. Each query is wrapped (see query_* below)
+# so a missing view degrades gracefully to an empty panel rather than a 500.
+# ---------------------------------------------------------------------------
+
+# Overall headline: totals across every review (legacy CSV + API era).
+REVIEW_HEADLINE_SQL = """
+SELECT
+    SUM(review_count)                                               AS total_reviews,
+    ROUND(SUM(review_count * avg_rating) / NULLIF(SUM(review_count), 0), 2)
+                                                                    AS overall_avg
+FROM ops.review_summary
+"""
+
+# Per-listing ratings, top by count. Legacy CSV-era reviews (no listing_id)
+# are excluded here — they have no listing to attribute to — but they DO count
+# in the overall headline above, so the totals stay honest.
+REVIEW_BY_LISTING_SQL = """
+SELECT
+    listing_title,
+    review_count,
+    avg_rating,
+    stars_5, stars_4, stars_3, stars_2, stars_1,
+    last_review
+FROM ops.review_summary
+WHERE listing_id IS NOT NULL
+ORDER BY review_count DESC, avg_rating DESC
+LIMIT 10
+"""
+
+# Latest reviews ticker — reviewer-safe (view exposes no buyer PII).
+REVIEW_RECENT_SQL = """
+SELECT star_rating, message, reviewed_at, listing_title
+FROM ops.review_recent
+LIMIT 3
+"""
+
+# Per-listing attention for the latest snapshot day, top by views, with the
+# day-over-day delta (NULL until a second snapshot exists). New listings appear
+# automatically the day their first snapshot lands.
+LISTING_ATTENTION_SQL = """
+WITH latest AS (SELECT MAX(snapshot_date) AS d FROM ops.listing_attention)
+SELECT
+    a.listing_title,
+    a.state,
+    a.views,
+    a.num_favorers,
+    a.views_delta,
+    a.favorers_delta,
+    a.has_prior,
+    a.snapshot_date
+FROM ops.listing_attention a, latest
+WHERE a.snapshot_date = latest.d
+ORDER BY a.views DESC NULLS LAST
+LIMIT 5
+"""
+
+# ---------------------------------------------------------------------------
 # DB
 # ---------------------------------------------------------------------------
 
@@ -393,6 +459,33 @@ def query_freshness() -> dict:
         except Exception:  # noqa: BLE001 — view-missing or transient; try fallback / give up
             continue
     return {}
+
+
+def _query_safe(sql: str, params=None, default=None):
+    """Run a query but never raise — a missing ops view (e.g. migration 008 not
+    yet deployed to this DB) degrades the panel to empty, it can't 500 the page.
+    Mirrors query_freshness()'s defensive posture for the Task #64 panels."""
+    try:
+        return _query(sql, params)
+    except Exception:  # noqa: BLE001 — view-missing or transient
+        return default if default is not None else []
+
+
+def query_review_headline() -> dict:
+    rows = _query_safe(REVIEW_HEADLINE_SQL, {})
+    return rows[0] if rows else {}
+
+
+def query_reviews_by_listing() -> list:
+    return _query_safe(REVIEW_BY_LISTING_SQL, {})
+
+
+def query_reviews_recent() -> list:
+    return _query_safe(REVIEW_RECENT_SQL, {})
+
+
+def query_listing_attention() -> list:
+    return _query_safe(LISTING_ATTENTION_SQL, {})
 
 
 # ---------------------------------------------------------------------------
@@ -703,6 +796,172 @@ def _render_etsy_yoy(rows: list) -> str:
 </div>"""
 
 
+def _fmt_delta(v) -> str:
+    """Signed day-over-day delta cell. None (no prior snapshot) -> a muted dash
+    so the single-snapshot day reads as 'no trend yet', not '0'."""
+    if v is None:
+        return "<span class='delta-none' title='no prior snapshot yet'>—</span>"
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return _esc(v)
+    if n > 0:
+        return f"<span class='delta-up'>+{n:,}</span>"
+    if n < 0:
+        return f"<span class='delta-down'>{n:,}</span>"
+    return "<span class='delta-flat'>0</span>"
+
+
+def _render_stars(rating) -> str:
+    """Compact star glyphs for an avg/whole rating (rounded to nearest half)."""
+    try:
+        r = float(rating)
+    except (TypeError, ValueError):
+        return ""
+    full = int(r)
+    half = (r - full) >= 0.5
+    stars = "★" * full + ("⯨" if half else "") + "☆" * (5 - full - (1 if half else 0))
+    return f"<span class='stars' title='{r:.2f}'>{stars}</span>"
+
+
+def _render_reviews(headline: dict, by_listing: list, recent: list) -> str:
+    """Etsy reviews panel: headline (avg + count), latest-3 ticker, per-listing
+    ratings table (top by count). Reviewer-safe — message text + rating + date
+    only, as Etsy shows publicly."""
+    total = headline.get("total_reviews")
+    avg = headline.get("overall_avg")
+    if not total:
+        head = "<p class='empty'>No reviews loaded yet.</p>"
+    else:
+        head = (
+            "<div class='review-head'>"
+            f"<div class='review-avg'>{float(avg):.2f}{_render_stars(avg)}</div>"
+            f"<div class='review-count'>{_fmt_int(total)} reviews</div>"
+            "</div>"
+        )
+
+    # Latest-3 ticker.
+    if recent:
+        items = []
+        for r in recent:
+            msg = (r.get("message") or "").strip()
+            # Etsy double-encodes some entities in the export (&#39; etc.); render
+            # the raw text but trim + escape for safety. Public text only.
+            if len(msg) > 140:
+                msg = msg[:137] + "…"
+            msg_html = _esc(msg) if msg else "<i>(rating only, no text)</i>"
+            items.append(
+                "<div class='review-item'>"
+                f"<div class='review-item-top'>{_render_stars(r.get('star_rating'))}"
+                f"<span class='review-date'>{_fmt_date(r.get('reviewed_at'))}</span>"
+                f"<span class='review-listing'>{_esc((r.get('listing_title') or '')[:48])}</span></div>"
+                f"<div class='review-msg'>{msg_html}</div>"
+                "</div>"
+            )
+        ticker = "<div class='review-ticker'>" + "".join(items) + "</div>"
+    else:
+        ticker = "<p class='panel-note'>No recent reviews to show.</p>"
+
+    # Per-listing ratings table.
+    if by_listing:
+        rows_html = []
+        for r in by_listing:
+            title = r.get("listing_title") or ""
+            title_short = title if len(title) <= 64 else title[:61] + "…"
+            rows_html.append(
+                "<tr>"
+                f"<td class='platform' title='{_esc(title)}'>{_esc(title_short)}</td>"
+                f"<td class='num'>{_fmt_int(r.get('review_count'))}</td>"
+                f"<td class='num'>{float(r.get('avg_rating')):.2f} {_render_stars(r.get('avg_rating'))}</td>"
+                f"<td class='num'>{_fmt_int(r.get('stars_5'))}</td>"
+                f"<td class='num'>{_fmt_int((r.get('stars_4') or 0) + (r.get('stars_3') or 0) + (r.get('stars_2') or 0) + (r.get('stars_1') or 0))}</td>"
+                f"<td class='date'>{_fmt_date(r.get('last_review'))}</td>"
+                "</tr>"
+            )
+        table_body = "\n".join(rows_html)
+    else:
+        table_body = "<tr class='empty'><td colspan='6'>No per-listing reviews with a listing id yet.</td></tr>"
+
+    return f"""
+<div class="panel">
+  <h2>Etsy reviews</h2>
+  <p class='panel-note'>Public review data via the Etsy API (refreshed daily). Per-listing rows below exclude legacy CSV-era reviews that predate listing-id capture; those still count in the headline total.</p>
+  {head}
+  {ticker}
+  <table>
+    <thead>
+      <tr>
+        <th>Listing</th>
+        <th class='num'>Reviews</th>
+        <th class='num'>Avg</th>
+        <th class='num'>5★</th>
+        <th class='num'>&lt;5★</th>
+        <th>Last review</th>
+      </tr>
+    </thead>
+    <tbody>{table_body}</tbody>
+  </table>
+</div>"""
+
+
+def _render_listing_attention(rows: list) -> str:
+    """Listing-attention panel: per-listing views + favorers for the latest
+    snapshot day, with day-over-day deltas (NULL until a 2nd snapshot lands).
+    Top 5 by views; new listings appear automatically on their first snapshot."""
+    if not rows:
+        body = "<tr class='empty'><td colspan='6'>No listing snapshots yet.</td></tr>"
+        snap_note = ""
+        trend_building = False
+    else:
+        trend_building = not any(r.get("has_prior") for r in rows)
+        snap_date = _fmt_date(rows[0].get("snapshot_date"))
+        snap_note = f"Snapshot {snap_date}."
+        max_views = max((int(r.get("views") or 0) for r in rows), default=1) or 1
+        parts = []
+        for r in rows:
+            views = int(r.get("views") or 0)
+            pct = (views / max_views) * 100
+            title = r.get("listing_title") or ""
+            title_short = title if len(title) <= 64 else title[:61] + "…"
+            parts.append(
+                "<tr>"
+                f"<td class='platform' title='{_esc(title)}'>{_esc(title_short)}</td>"
+                f"<td class='date'>{_esc(r.get('state'))}</td>"
+                f"<td class='num'>{_fmt_int(views)}"
+                f"<div class='inline-bar'><div class='inline-bar-fill' style='width:{pct:.0f}%'></div></div>"
+                "</td>"
+                f"<td class='num'>{_fmt_delta(r.get('views_delta'))}</td>"
+                f"<td class='num'>{_fmt_int(r.get('num_favorers'))}</td>"
+                f"<td class='num'>{_fmt_delta(r.get('favorers_delta'))}</td>"
+                "</tr>"
+            )
+        body = "\n".join(parts)
+
+    trend_banner = (
+        "<p class='panel-note'>Day-over-day deltas build daily — one snapshot so far, so deltas show “—”.</p>"
+        if trend_building else ""
+    )
+    return f"""
+<div class="panel">
+  <h2>Listing attention (views &amp; favorers)</h2>
+  <p class='panel-note'>Top listings by views from the daily Etsy listing-stats snapshot. {snap_note} Multi-species (lists 6/9) and custom-engraved (6/16) appear here automatically once live.</p>
+  {trend_banner}
+  <table>
+    <thead>
+      <tr>
+        <th>Listing</th>
+        <th>State</th>
+        <th class='num'>Views</th>
+        <th class='num'>Δ views</th>
+        <th class='num'>Favorers</th>
+        <th class='num'>Δ fav</th>
+      </tr>
+    </thead>
+    <tbody>{body}</tbody>
+  </table>
+</div>"""
+
+
 def _render_freshness_badge(fresh: dict) -> str:
     """Small topbar badge surfacing GA4 load freshness (Flag B). Warns when
     days_behind > 1 so a stalled ga4-load cron is visible on the page."""
@@ -740,6 +999,10 @@ def build_html(
     links: list,
     etsy: list,
     freshness: dict | None = None,
+    review_headline: dict | None = None,
+    reviews_by_listing: list | None = None,
+    reviews_recent: list | None = None,
+    listing_attention: list | None = None,
 ) -> str:
     headline_html = _render_headline(headline)
     freshness_html = _render_freshness_badge(freshness or {})
@@ -748,6 +1011,10 @@ def build_html(
     landing_html = _render_by_landing(by_landing)
     link_html = _render_link_performance(links)
     etsy_html = _render_etsy_yoy(etsy)
+    reviews_html = _render_reviews(
+        review_headline or {}, reviews_by_listing or [], reviews_recent or []
+    )
+    attention_html = _render_listing_attention(listing_attention or [])
 
     # Banner sentence — matches the CLI's _print_headline_summary so Brian
     # gets the same plain-English read at the top of the page.
@@ -1027,6 +1294,36 @@ def build_html(
   }}
   .link-summary b {{ color: var(--ivory); font-weight: 700; }}
   .link-summary .zero-stat b {{ color: var(--warn); }}
+  /* --- Reviews (Task #64) --- */
+  .empty {{ color: var(--slate); font-style: italic; font-size: 13px; padding: 6px 0; }}
+  .review-head {{
+    display: flex; align-items: baseline; gap: 14px; margin-bottom: 14px;
+  }}
+  .review-avg {{
+    font-size: 30px; font-weight: 700; color: var(--ivory);
+    font-variant-numeric: tabular-nums; display: flex; align-items: baseline; gap: 8px;
+  }}
+  .review-count {{ font-size: 13px; color: var(--sand); font-weight: 600; }}
+  .stars {{ color: var(--warn); font-size: 15px; letter-spacing: 1px; }}
+  .review-avg .stars {{ font-size: 20px; }}
+  .review-ticker {{ display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }}
+  .review-item {{
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+  }}
+  .review-item-top {{
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px;
+  }}
+  .review-date {{ font-size: 11px; color: var(--sand); font-variant-numeric: tabular-nums; }}
+  .review-listing {{ font-size: 11px; color: var(--slate); font-style: italic; }}
+  .review-msg {{ font-size: 13px; color: var(--ivory); line-height: 1.4; }}
+  /* --- Day-over-day deltas --- */
+  .delta-up {{ color: var(--good); font-weight: 600; }}
+  .delta-down {{ color: var(--bad); font-weight: 600; }}
+  .delta-flat {{ color: var(--sand); }}
+  .delta-none {{ color: var(--slate); font-weight: 700; }}
   /* Footer */
   .footer {{
     color: var(--slate);
@@ -1072,13 +1369,16 @@ function refreshData() {{
 </div>
 <div class="content">
   {headline_html}
+  {reviews_html}
+  {attention_html}
   {platform_html}
   {post_html}
   {landing_html}
   {link_html}
   {etsy_html}
   <div class="footer">
-    Data: GA4 events (raw.ga4_events) + UTM registry (raw.utm_links) + Etsy stats (raw.etsy_traffic_stats) ·
+    Data: GA4 events (raw.ga4_events) + UTM registry (raw.utm_links) + Etsy stats (raw.etsy_traffic_stats) +
+    Etsy reviews / listing attention (ops.review_summary · ops.review_recent · ops.listing_attention) ·
     Attribution: utm_campaign = phase1_reactivation
   </div>
 </div>
@@ -1095,6 +1395,10 @@ def generate_page() -> str:
         links=query_link_performance(),
         etsy=query_etsy_yoy(),
         freshness=query_freshness(),
+        review_headline=query_review_headline(),
+        reviews_by_listing=query_reviews_by_listing(),
+        reviews_recent=query_reviews_recent(),
+        listing_attention=query_listing_attention(),
     )
 
 
