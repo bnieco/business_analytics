@@ -17,6 +17,8 @@ Endpoint -> table mapping
   getShopReceipts            -> raw.etsy_orders        (receipt_id -> order_id)
   receipt transactions[]     -> raw.etsy_order_items   (carry numeric listing_id)
   getListingsByShop          -> raw.etsy_listings      (populate listing_id)
+  getListingsByShop (reuse)  -> raw.etsy_listing_stats_daily  (views/num_favorers snapshot)
+  getReviewsByShop           -> raw.etsy_reviews       (API rows keyed on transaction_id)
 
 OAuth model
 -----------
@@ -577,6 +579,59 @@ def listing_to_row(l: dict, loaded_at: datetime) -> dict:
     }
 
 
+def listing_to_stat_row(l: dict, snapshot_date: date, loaded_at: datetime) -> dict | None:
+    """Map a getListingsByShop result -> raw.etsy_listing_stats_daily upsert dict.
+
+    Captured from the SAME getListingsByShop response the listings loader already
+    fetches (no extra API call). `views` is a ShopListingWithAssociations field
+    that Etsy tabulates once/day and only for active listings (spec-verified);
+    inactive/expired rows simply carry views=NULL/0, which we record as-is. Returns
+    None if the listing has no usable listing_id (PK component)."""
+    listing_id = l.get("listing_id")
+    if listing_id is None:
+        return None
+    return {
+        "listing_id": listing_id,
+        "snapshot_date": snapshot_date,
+        "state": l.get("state"),
+        "views": l.get("views"),
+        "num_favorers": l.get("num_favorers"),
+        "quantity": l.get("quantity"),
+        "_api_loaded_at": loaded_at,
+    }
+
+
+def review_to_row(rv: dict, order_id: int | None, loaded_at: datetime) -> dict:
+    """Map a getReviewsByShop result -> raw.etsy_reviews insert dict.
+
+    Spec-verified (Etsy Dev MCP, getReviewsByShop -> TransactionReview): a review
+    is keyed on transaction_id and carries listing_id, buyer_user_id, rating,
+    review (text), language, create/created_timestamp, update/updated_timestamp.
+    It carries NO receipt_id/order_id, so order_id is DERIVED upstream from the
+    raw.etsy_order_items transaction_id -> receipt_id map (None when the txn is
+    outside our receipts window). Field mapping to CSV-era columns:
+      rating            -> star_rating
+      review            -> message
+      create_timestamp  -> reviewed_at (date)
+      update_timestamp  -> updated_at (date)
+    """
+    create_ts = rv.get("create_timestamp") or rv.get("created_timestamp")
+    update_ts = rv.get("update_timestamp") or rv.get("updated_timestamp")
+    return {
+        "order_id": order_id,
+        "reviewer": None,  # API does not expose a reviewer display name
+        "reviewed_at": _ts_to_date(create_ts),
+        "star_rating": rv.get("rating"),
+        "message": rv.get("review"),
+        "transaction_id": rv.get("transaction_id"),
+        "listing_id": rv.get("listing_id"),
+        "buyer_user_id": rv.get("buyer_user_id"),
+        "language": rv.get("language"),
+        "updated_at": _ts_to_date(update_ts),
+        "_api_loaded_at": loaded_at,
+    }
+
+
 # ===========================================================================
 # Postgres load (ID-keyed delete-reload under advisory lock)
 # ===========================================================================
@@ -643,6 +698,41 @@ def delete_reload(
     return len(rows)
 
 
+UPSERT_LISTING_STATS_SQL = text(
+    """
+    INSERT INTO raw.etsy_listing_stats_daily
+        (listing_id, snapshot_date, state, views, num_favorers, quantity, _api_loaded_at)
+    VALUES
+        (:listing_id, :snapshot_date, :state, :views, :num_favorers, :quantity, :_api_loaded_at)
+    ON CONFLICT (listing_id, snapshot_date) DO UPDATE
+       SET state          = EXCLUDED.state,
+           views          = EXCLUDED.views,
+           num_favorers   = EXCLUDED.num_favorers,
+           quantity       = EXCLUDED.quantity,
+           _api_loaded_at = EXCLUDED._api_loaded_at
+    """
+)
+
+
+def upsert_listing_stats(
+    engine: Engine, *, rows: list[dict], snapshot_date: date, last_max_created: int | None = None,
+) -> int:
+    """Upsert the per-listing daily snapshot keyed on (listing_id, snapshot_date),
+    so a manual same-day re-run overwrites instead of duplicating. Serialized by
+    the same advisory-lock pattern; records its own raw.etsy_api_load_state row."""
+    with engine.begin() as conn:
+        conn.execute(ADVISORY_LOCK_SQL, {"lock_key": f"listing_stats:{snapshot_date.isoformat()}"})
+        if rows:
+            conn.execute(UPSERT_LISTING_STATS_SQL, rows)
+        conn.execute(UPSERT_STATE_SQL, {
+            "entity": "listing_stats",
+            "window_key": snapshot_date.isoformat(),
+            "last_max_created": last_max_created,
+            "row_count": len(rows),
+        })
+    return len(rows)
+
+
 # ===========================================================================
 # Entity loaders
 # ===========================================================================
@@ -699,10 +789,16 @@ def load_receipts_and_items(
 
 def load_listings(
     engine: Engine, client: EtsyClient, shop_id: str, loaded_at: datetime,
-) -> EntityResult:
+    snapshot_date: date,
+) -> tuple[EntityResult, EntityResult]:
     """Full refresh of raw.etsy_listings via getListingsByShop, populating
-    listing_id. Pulls active + inactive/expired/draft/sold_out."""
+    listing_id. Pulls active + inactive/expired/draft/sold_out. From the SAME
+    streamed responses, also captures a per-listing daily attention snapshot
+    (views/num_favorers/state/quantity) into raw.etsy_listing_stats_daily — no
+    extra API calls. Returns (listings_result, listing_stats_result); the two
+    writes are isolated so a stats-table failure cannot fail the listings load."""
     rows: list[dict] = []
+    stat_rows: dict[int, dict] = {}  # listing_id -> stat row (dedupe across states)
     max_created = None
     # getListingsByShop supports a `state` filter; pull each state for completeness.
     for state in ("active", "inactive", "expired", "draft", "sold_out"):
@@ -711,6 +807,9 @@ def load_listings(
                 f"/shops/{shop_id}/listings", params={"state": state}
             ):
                 rows.append(listing_to_row(listing, loaded_at))
+                stat = listing_to_stat_row(listing, snapshot_date, loaded_at)
+                if stat is not None:
+                    stat_rows[stat["listing_id"]] = stat  # last write wins per listing
                 ct = listing.get("created_timestamp") or listing.get("creation_timestamp")
                 if ct and (max_created is None or ct > max_created):
                     max_created = ct
@@ -718,10 +817,59 @@ def load_listings(
             # Some states (e.g. draft) can 4xx on shops without them; log + continue.
             log.warning("Listings state=%s skipped: %s", state, e)
 
-    return _safe_delete_reload(
+    listings_res = _safe_delete_reload(
         engine, entity="listings", table="raw.etsy_listings", id_column="listing_id",
         rows=rows, window_key="full",
         lock_key="listings:full", last_max_created=max_created,
+    )
+
+    stats_res = _safe_run(
+        "listing_stats",
+        lambda: upsert_listing_stats(
+            engine, rows=list(stat_rows.values()), snapshot_date=snapshot_date,
+        ),
+        log_msg=lambda n: f"Snapshotted {n} listing-stat rows into "
+                          f"raw.etsy_listing_stats_daily (snapshot_date={snapshot_date})",
+    )
+    return listings_res, stats_res
+
+
+def load_reviews(
+    engine: Engine, client: EtsyClient, shop_id: str, loaded_at: datetime,
+) -> EntityResult:
+    """Full refresh of the API-era rows in raw.etsy_reviews via getReviewsByShop.
+
+    Review volume is small, so we full-refresh every run, delete-reloading on the
+    review identity key (transaction_id — one review per transaction; spec-verified).
+    CSV-era rows (transaction_id IS NULL) are never touched by the ID-keyed delete.
+    order_id carries no value on the API record, so we DERIVE it best-effort from
+    the raw.etsy_order_items transaction_id -> receipt_id map (None when the txn is
+    outside our loaded receipts)."""
+    # Build the txn -> receipt_id map from already-loaded order_items.
+    with engine.connect() as conn:
+        txn_map = {
+            int(r[0]): int(r[1])
+            for r in conn.execute(text(
+                "SELECT transaction_id, receipt_id FROM raw.etsy_order_items "
+                "WHERE transaction_id IS NOT NULL AND receipt_id IS NOT NULL"
+            ))
+            if r[0] is not None
+        }
+
+    rows: list[dict] = []
+    max_created = None
+    for rv in client.paginate(f"/shops/{shop_id}/reviews"):
+        txn_id = rv.get("transaction_id")
+        order_id = txn_map.get(int(txn_id)) if txn_id is not None else None
+        rows.append(review_to_row(rv, order_id, loaded_at))
+        ct = rv.get("create_timestamp") or rv.get("created_timestamp")
+        if ct and (max_created is None or ct > max_created):
+            max_created = ct
+
+    return _safe_delete_reload(
+        engine, entity="reviews", table="raw.etsy_reviews", id_column="transaction_id",
+        rows=rows, window_key="full",
+        lock_key="reviews:full", last_max_created=max_created,
     )
 
 
@@ -737,6 +885,19 @@ def _safe_delete_reload(engine, **kwargs) -> EntityResult:
         return EntityResult(entity=entity, status="failed", error=str(e))
 
 
+def _safe_run(entity: str, fn, *, log_msg) -> EntityResult:
+    """Per-entity failure isolation for loaders that don't use delete_reload
+    (e.g. the listing-stats upsert). `fn` returns the row count; `log_msg(n)`
+    builds the success log line."""
+    try:
+        n = fn()
+        log.info("%s", log_msg(n))
+        return EntityResult(entity=entity, status="loaded", row_count=n)
+    except Exception as e:  # noqa: BLE001 — isolate per-entity failures
+        log.exception("Load failed for entity=%s: %s", entity, e)
+        return EntityResult(entity=entity, status="failed", error=str(e))
+
+
 # ===========================================================================
 # Dry run (NO live API calls)
 # ===========================================================================
@@ -746,17 +907,24 @@ def check_postgres() -> None:
     with engine.connect() as conn:
         version = conn.execute(text("SELECT version()")).scalar()
         print(f"  Postgres         : {version.split(',')[0]}")
-        for tbl in ("etsy_orders", "etsy_order_items", "etsy_listings", "etsy_api_load_state"):
+        for tbl in ("etsy_orders", "etsy_order_items", "etsy_listings",
+                    "etsy_reviews", "etsy_listing_stats_daily", "etsy_api_load_state"):
             exists = conn.execute(text(
                 "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
                 "WHERE table_schema='raw' AND table_name=:t)"
             ), {"t": tbl}).scalar()
-            print(f"  raw.{tbl:<19} : {'present' if exists else 'MISSING (run migration 006)'}")
+            mig = "006" if tbl in ("etsy_orders", "etsy_order_items", "etsy_listings", "etsy_api_load_state") else "007"
+            print(f"  raw.{tbl:<25} : {'present' if exists else f'MISSING (run migration {mig})'}")
         has_lid = conn.execute(text(
             "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
             "WHERE table_schema='raw' AND table_name='etsy_listings' AND column_name='listing_id')"
         )).scalar()
-        print(f"  listings.listing_id: {'present' if has_lid else 'MISSING (run migration 006)'}")
+        print(f"  listings.listing_id        : {'present' if has_lid else 'MISSING (run migration 006)'}")
+        has_txn = conn.execute(text(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+            "WHERE table_schema='raw' AND table_name='etsy_reviews' AND column_name='transaction_id')"
+        )).scalar()
+        print(f"  reviews.transaction_id     : {'present' if has_txn else 'MISSING (run migration 007)'}")
 
 
 def cmd_dry_run(start: date, end: date, backfill_days: int) -> int:
@@ -811,6 +979,8 @@ def cmd_dry_run(start: date, end: date, backfill_days: int) -> int:
     print(f"  - GET /shops/<shop_id>/receipts  (min/max_created over the window) -> raw.etsy_orders")
     print(f"  - GET receipt transactions                                        -> raw.etsy_order_items")
     print(f"  - GET /shops/<shop_id>/listings  (all states)                     -> raw.etsy_listings")
+    print(f"      ^ same responses also snapshotted (views/num_favorers)        -> raw.etsy_listing_stats_daily")
+    print(f"  - GET /shops/<shop_id>/reviews   (full refresh, no scopes)        -> raw.etsy_reviews (API rows)")
     print("No live API calls were made by this dry run.")
     return 0
 
@@ -880,6 +1050,7 @@ def main() -> int:
         return 2
 
     loaded_at = datetime.now(tz=timezone.utc)
+    snapshot_date = loaded_at.date()
     results: list[EntityResult] = []
 
     try:
@@ -892,9 +1063,21 @@ def main() -> int:
         return 2
 
     try:
-        results.append(load_listings(get_engine(), client, shop_id, loaded_at))
+        listings_res, listing_stats_res = load_listings(
+            get_engine(), client, shop_id, loaded_at, snapshot_date
+        )
+        results.extend([listings_res, listing_stats_res])
     except AuthError as e:
         log.error("Auth failed during listings: %s", e)
+        return 2
+
+    # Reviews: spec says getReviewsByShop needs NO OAuth scopes, but our session
+    # still carries the api-key + bearer it already holds. Isolated so a reviews
+    # failure cannot fail orders/items/listings.
+    try:
+        results.append(load_reviews(get_engine(), client, shop_id, loaded_at))
+    except AuthError as e:
+        log.error("Auth failed during reviews: %s", e)
         return 2
 
     loaded = [r for r in results if r.status == "loaded"]
