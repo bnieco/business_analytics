@@ -14,6 +14,7 @@ Stdlib http.server + SQLAlchemy + pandas, inline HTML. Panels:
     Q7  Etsy "Social Media" YoY
     R1  Etsy reviews — avg+count headline, latest-3, per-listing [added 2026-06-04, Task #64]
     R2  Listing attention — views/favorers + day-over-day delta  [added 2026-06-04, Task #64]
+    O1  Orders — YTD + this-week totals, this-week detail, yesterday [added 2026-06-09, Brian request]
 
 Reviews/attention panels read ops.review_summary / ops.review_recent /
 ops.listing_attention (migration 008) — never raw.* directly — and degrade to
@@ -380,6 +381,48 @@ LIMIT 5
 """
 
 # ---------------------------------------------------------------------------
+# Orders (Brian request, 2026-06-09). All read ops.* views from migration 009
+# (ops.orders_rollup / ops.orders_week_detail / ops.orders_recent) — never raw.*
+# directly. Status filter (excludes canceled/fully-refunded) lives in the views.
+# Each query is wrapped in _query_safe so a missing view degrades to an empty
+# panel rather than a 500, same defensive posture as the reviews panels.
+# Orders are as-of the daily 06:15 Etsy ingest — today's order won't appear until
+# tomorrow's run; the rollup carries max_sale_date / max_api_loaded_at so the
+# panel can show "orders current through …".
+# ---------------------------------------------------------------------------
+
+# One-row scoreboard: YTD + this-ISO-week counts/revenue + freshness stamps.
+ORDERS_ROLLUP_SQL = """
+SELECT
+    this_year,
+    week_start,
+    week_end,
+    ytd_orders,
+    ytd_revenue,
+    week_orders,
+    week_revenue,
+    max_sale_date,
+    max_api_loaded_at
+FROM ops.orders_rollup
+"""
+
+# This-week line items — renderer groups by order_id so a multi-item order reads
+# as one order.
+ORDERS_WEEK_DETAIL_SQL = """
+SELECT sale_date, order_id, item_title, quantity, unit_price, order_total
+FROM ops.orders_week_detail
+"""
+
+# Yesterday's line items (relative to the real calendar yesterday) — read from
+# the recent (14-day) view so we keep a single recent source.
+ORDERS_YESTERDAY_SQL = """
+SELECT sale_date, order_id, item_title, quantity, unit_price, order_total, status
+FROM ops.orders_recent
+WHERE sale_date = CURRENT_DATE - 1
+ORDER BY order_id, item_title
+"""
+
+# ---------------------------------------------------------------------------
 # DB
 # ---------------------------------------------------------------------------
 
@@ -488,6 +531,19 @@ def query_listing_attention() -> list:
     return _query_safe(LISTING_ATTENTION_SQL, {})
 
 
+def query_orders_rollup() -> dict:
+    rows = _query_safe(ORDERS_ROLLUP_SQL, {})
+    return rows[0] if rows else {}
+
+
+def query_orders_week_detail() -> list:
+    return _query_safe(ORDERS_WEEK_DETAIL_SQL, {})
+
+
+def query_orders_yesterday() -> list:
+    return _query_safe(ORDERS_YESTERDAY_SQL, {})
+
+
 # ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
@@ -497,6 +553,16 @@ def _fmt_int(v) -> str:
         return "—"
     try:
         return f"{int(v):,}"
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _fmt_money(v, symbol: str = "$") -> str:
+    """USD-style money. None -> em dash. Orders are USD on this shop."""
+    if v is None:
+        return "—"
+    try:
+        return f"{symbol}{float(v):,.2f}"
     except (TypeError, ValueError):
         return str(v)
 
@@ -962,6 +1028,179 @@ def _render_listing_attention(rows: list) -> str:
 </div>"""
 
 
+def _render_orders(rollup: dict, week_detail: list, yesterday: list) -> str:
+    """Orders section (Brian request): YTD + this-week scoreboard, this-week
+    line-item detail grouped by order, and a yesterday callout. Reads the
+    migration-009 ops views; degrades to empty stats / "no orders" copy rather
+    than erroring. Orders are as-of the daily Etsy ingest, so the freshness line
+    explains why today's order isn't here yet."""
+    ytd_orders = int(rollup.get("ytd_orders") or 0)
+    ytd_rev = rollup.get("ytd_revenue")
+    week_orders = int(rollup.get("week_orders") or 0)
+    week_rev = rollup.get("week_revenue")
+    week_start = _fmt_date(rollup.get("week_start"))
+    week_end = _fmt_date(rollup.get("week_end"))
+    this_year = rollup.get("this_year") or date.today().year
+
+    # Freshness line — "orders current through …" so a missing same-day order
+    # reads as not-yet-ingested, not as no-sale.
+    max_sale = _fmt_date(rollup.get("max_sale_date"))
+    loaded = rollup.get("max_api_loaded_at")
+    loaded_str = str(loaded)[:16].replace("T", " ") if loaded else "—"
+    freshness_line = (
+        f"Orders current through <b>{max_sale}</b> (last Etsy ingest {loaded_str} UTC). "
+        "Today's orders land on the next daily 06:15 run."
+        if rollup else
+        "Orders view unavailable — ops.orders_rollup not deployed to this DB."
+    )
+
+    # --- Scoreboard ---
+    week_range = (
+        f"{week_start} → {week_end}"
+        if rollup else "—"
+    )
+    scoreboard = f"""
+  <div class="stat-grid orders-grid">
+    <div class="stat">
+      <div class="stat-num">{_fmt_int(ytd_orders)}</div>
+      <div class="stat-label">Orders this year ({this_year} YTD)</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">{_fmt_money(ytd_rev)}</div>
+      <div class="stat-label">{this_year} revenue (order total)</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">{_fmt_int(week_orders)}</div>
+      <div class="stat-label">Orders this week</div>
+    </div>
+    <div class="stat">
+      <div class="stat-num">{_fmt_money(week_rev)}</div>
+      <div class="stat-label">This-week revenue</div>
+    </div>
+  </div>
+  <div class="window-meta">This week = current ISO week (Mon–Sun): <b>{week_range}</b>. Counts exclude canceled/refunded orders; revenue = sum of order totals (incl. shipping &amp; tax).</div>"""
+
+    # --- This-week detail: line items grouped by order_id ---
+    if week_detail:
+        # Group rows by order so a multi-item order reads as one order block.
+        groups: dict = {}
+        order_seq = []
+        for r in week_detail:
+            oid = str(r.get("order_id"))
+            if oid not in groups:
+                groups[oid] = []
+                order_seq.append(oid)
+            groups[oid].append(r)
+        parts = []
+        for oid in order_seq:
+            items = groups[oid]
+            first = items[0]
+            order_date = _fmt_date(first.get("sale_date"))
+            order_total = first.get("order_total")
+            n_items = len(items)
+            # First row of an order carries the order_id + date + total (rowspan);
+            # subsequent item rows leave those cells blank for a clean grouped read.
+            for idx, it in enumerate(items):
+                title = it.get("item_title") or ""
+                title_short = title if len(title) <= 72 else title[:69] + "…"
+                if idx == 0:
+                    order_cells = (
+                        f"<td class='date' rowspan='{n_items}'>{order_date}</td>"
+                        f"<td class='code' rowspan='{n_items}'>{_esc(oid)}</td>"
+                    )
+                    total_cell = (
+                        f"<td class='num' rowspan='{n_items}'>{_fmt_money(order_total)}</td>"
+                    )
+                else:
+                    order_cells = ""
+                    total_cell = ""
+                row_cls = "order-group-start" if idx == 0 else "order-group-cont"
+                parts.append(
+                    f"<tr class='{row_cls}'>"
+                    f"{order_cells}"
+                    f"<td title='{_esc(title)}'>{_esc(title_short)}</td>"
+                    f"<td class='num'>{_fmt_int(it.get('quantity'))}</td>"
+                    f"<td class='num'>{_fmt_money(it.get('unit_price'))}</td>"
+                    f"{total_cell}"
+                    "</tr>"
+                )
+        detail_body = "\n".join(parts)
+    else:
+        detail_body = (
+            "<tr class='empty'><td colspan='5'>No orders yet this week.</td></tr>"
+        )
+
+    detail_table = f"""
+  <h3 class="orders-subhead">This week — what was ordered</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Order</th>
+        <th>Product</th>
+        <th class='num'>Qty</th>
+        <th class='num'>Unit price</th>
+        <th class='num'>Order total</th>
+      </tr>
+    </thead>
+    <tbody>{detail_body}</tbody>
+  </table>"""
+
+    # --- Yesterday callout ---
+    if yesterday:
+        yday_date = _fmt_date(yesterday[0].get("sale_date"))
+        # Distinct orders + their items.
+        groups: dict = {}
+        order_seq = []
+        for r in yesterday:
+            oid = str(r.get("order_id"))
+            if oid not in groups:
+                groups[oid] = []
+                order_seq.append(oid)
+            groups[oid].append(r)
+        n_orders = len(order_seq)
+        order_blocks = []
+        for oid in order_seq:
+            items = groups[oid]
+            total = items[0].get("order_total")
+            item_lines = "".join(
+                f"<li>{_fmt_int(it.get('quantity'))}× {_esc(it.get('item_title'))}"
+                f" <span class='yday-price'>@ {_fmt_money(it.get('unit_price'))}</span></li>"
+                for it in items
+            )
+            order_blocks.append(
+                "<div class='yday-order'>"
+                f"<div class='yday-order-head'>Order <span class='code'>{_esc(oid)}</span>"
+                f"<span class='yday-total'>{_fmt_money(total)}</span></div>"
+                f"<ul class='yday-items'>{item_lines}</ul>"
+                "</div>"
+            )
+        yday_html = (
+            f"<div class='yday-head'>{n_orders} order{'s' if n_orders != 1 else ''} on "
+            f"<b>{yday_date}</b></div>"
+            + "".join(order_blocks)
+        )
+    else:
+        yday_html = (
+            "<div class='yday-empty'>No orders yesterday.</div>"
+        )
+
+    yesterday_callout = f"""
+  <div class="yday-callout">
+    <h3 class="orders-subhead">Yesterday</h3>
+    {yday_html}
+  </div>"""
+
+    return f"""
+<div class="panel orders-panel">
+  <h2>Orders</h2>
+  <p class='panel-note'>{freshness_line}</p>
+  {scoreboard}
+  {yesterday_callout}
+  {detail_table}
+</div>"""
+
+
 def _render_freshness_badge(fresh: dict) -> str:
     """Small topbar badge surfacing GA4 load freshness (Flag B). Warns when
     days_behind > 1 so a stalled ga4-load cron is visible on the page."""
@@ -1003,6 +1242,9 @@ def build_html(
     reviews_by_listing: list | None = None,
     reviews_recent: list | None = None,
     listing_attention: list | None = None,
+    orders_rollup: dict | None = None,
+    orders_week_detail: list | None = None,
+    orders_yesterday: list | None = None,
 ) -> str:
     headline_html = _render_headline(headline)
     freshness_html = _render_freshness_badge(freshness or {})
@@ -1015,6 +1257,9 @@ def build_html(
         review_headline or {}, reviews_by_listing or [], reviews_recent or []
     )
     attention_html = _render_listing_attention(listing_attention or [])
+    orders_html = _render_orders(
+        orders_rollup or {}, orders_week_detail or [], orders_yesterday or []
+    )
 
     # Banner sentence — matches the CLI's _print_headline_summary so Brian
     # gets the same plain-English read at the top of the page.
@@ -1319,6 +1564,41 @@ def build_html(
   .review-date {{ font-size: 11px; color: var(--sand); font-variant-numeric: tabular-nums; }}
   .review-listing {{ font-size: 11px; color: var(--slate); font-style: italic; }}
   .review-msg {{ font-size: 13px; color: var(--ivory); line-height: 1.4; }}
+  /* --- Orders (Brian request) --- */
+  .orders-panel {{ background: linear-gradient(135deg, var(--surface) 0%, var(--bg-deeper) 100%); }}
+  .orders-grid {{ grid-template-columns: repeat(4, 1fr); margin-bottom: 8px; }}
+  @media (max-width: 900px) {{ .orders-grid {{ grid-template-columns: repeat(2, 1fr); }} }}
+  .orders-subhead {{
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--sand); margin: 18px 0 10px;
+  }}
+  tr.order-group-cont td {{ border-top: none; }}
+  tr.order-group-start td {{ border-top: 1px solid var(--border); }}
+  .yday-callout {{
+    background: rgba(138,118,196,0.10);
+    border: 1px solid var(--plum-bright);
+    border-radius: 8px;
+    padding: 14px 18px;
+    margin-top: 14px;
+  }}
+  .yday-callout .orders-subhead {{ margin-top: 0; }}
+  .yday-head {{ font-size: 13px; color: var(--ivory); margin-bottom: 10px; }}
+  .yday-empty {{ font-size: 13px; color: var(--sand); font-style: italic; }}
+  .yday-order {{
+    background: rgba(255,255,255,0.03);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 8px;
+  }}
+  .yday-order-head {{
+    display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px;
+    font-size: 12px; color: var(--sand);
+  }}
+  .yday-total {{ margin-left: auto; color: var(--ivory); font-weight: 700; font-variant-numeric: tabular-nums; }}
+  .yday-items {{ list-style: none; margin: 0; padding: 0; }}
+  .yday-items li {{ font-size: 13px; color: var(--ivory); padding: 2px 0; }}
+  .yday-price {{ color: var(--sand); font-size: 12px; }}
   /* --- Day-over-day deltas --- */
   .delta-up {{ color: var(--good); font-weight: 600; }}
   .delta-down {{ color: var(--bad); font-weight: 600; }}
@@ -1369,6 +1649,7 @@ function refreshData() {{
 </div>
 <div class="content">
   {headline_html}
+  {orders_html}
   {reviews_html}
   {attention_html}
   {platform_html}
@@ -1378,7 +1659,8 @@ function refreshData() {{
   {etsy_html}
   <div class="footer">
     Data: GA4 events (raw.ga4_events) + UTM registry (raw.utm_links) + Etsy stats (raw.etsy_traffic_stats) +
-    Etsy reviews / listing attention (ops.review_summary · ops.review_recent · ops.listing_attention) ·
+    Etsy reviews / listing attention (ops.review_summary · ops.review_recent · ops.listing_attention) +
+    Etsy orders (ops.orders_rollup · ops.orders_week_detail · ops.orders_recent) ·
     Attribution: utm_campaign = phase1_reactivation
   </div>
 </div>
@@ -1399,6 +1681,9 @@ def generate_page() -> str:
         reviews_by_listing=query_reviews_by_listing(),
         reviews_recent=query_reviews_recent(),
         listing_attention=query_listing_attention(),
+        orders_rollup=query_orders_rollup(),
+        orders_week_detail=query_orders_week_detail(),
+        orders_yesterday=query_orders_yesterday(),
     )
 
 
