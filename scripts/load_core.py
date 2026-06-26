@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import os
+import unicodedata
 from decimal import Decimal
 from pathlib import Path
 
@@ -30,12 +31,27 @@ DB_CONFIG = {
     "password": os.getenv("BUSINESS_DB_PASSWORD"),
 }
 
-# Item-name → SKU for listing_id=0 (direct/in-person sales).
-# Matched case-insensitively after stripping whitespace.
+# Item-name → SKU for listing_id null/0 (direct/in-person sales, or Etsy rows
+# whose listing_id didn't come through).
+#
+# Keys are NORMALIZED (see normalize_name): casefolded, Unicode-folded so curly
+# apostrophes (’) and en/em-dashes (–/—) match their ASCII forms, and whitespace
+# collapsed. Matching is by normalized-PREFIX (normalize_name(item) starts with
+# the key) so long marketing-suffix titles like
+#   "Elder's Dice Vault – Solid Wood Modular TTRPG Dice Vault & Rolling Tray – Cherry or Walnut"
+# resolve via the short canonical key. List longer/more-specific keys first;
+# resolve_part takes the longest matching key.
 DIRECT_ITEM_MAP = {
-    "deck of tokens for daggerheart":                             "DH-CSB-001",
-    "elder's dice vault":                                         "DT-VPR-001",
-    "ground - 1 tray":                                            "DT-GRD-001",
+    # "Deck of Tokens for Daggerheart …" — Brian-confirmed same canonical part as
+    # listings 4334519499 / 4332440465 (DH-CSB-001, part 1). See seed_parts.sql.
+    "deck of tokens for daggerheart":                            "DH-CSB-001",
+    # "Elder's Dice Vault – Solid Wood … Dice Vault & Rolling Tray – Cherry or
+    # Walnut" ($60) is an earlier title variant of DT-VLT-001 (listing 4332433907,
+    # part 4), NOT DT-VPR-001. Per vault "DT-VPR-001 Catalog Listing ID Fix":
+    # DT-VPR-001 ("Elder's Vault of Protection", listing 4332484207) has
+    # Brian-confirmed GENUINE ZERO SALES, so this sale cannot belong to it.
+    "elder's dice vault":                                        "DT-VLT-001",
+    "ground - 1 tray":                                           "DT-GRD-001",
 }
 
 
@@ -51,14 +67,53 @@ def coerce(val):
     return None if s.lower() in ("nan", "") else s
 
 
+# Unicode punctuation that varies between Etsy title revisions but should NOT
+# block a DIRECT_ITEM_MAP match. Folded to their ASCII equivalents before lookup.
+_PUNCT_FOLD = {
+    "’": "'",  # right single quote / curly apostrophe ’ -> '
+    "‘": "'",  # left single quote ‘ -> '
+    "ʼ": "'",  # modifier letter apostrophe ʼ -> '
+    "–": "-",  # en dash – -> -
+    "—": "-",  # em dash — -> -
+    "‐": "-",  # hyphen ‐ -> -
+    " ": " ",  # non-breaking space -> space
+}
+
+
+def normalize_name(name: str) -> str:
+    """Casefold + fold Unicode punctuation + collapse whitespace.
+
+    Makes DIRECT_ITEM_MAP matching robust to the apostrophe/dash/whitespace
+    variations that appear across Etsy title revisions (e.g. ’ vs ', – vs -),
+    so this class of skip can't recur from punctuation alone.
+    """
+    if not name:
+        return ""
+    s = unicodedata.normalize("NFKC", str(name))
+    s = "".join(_PUNCT_FOLD.get(ch, ch) for ch in s)
+    return " ".join(s.casefold().split())
+
+
 def resolve_part(listing_id: str, item_name: str, part_map: dict, sku_to_part: dict) -> int | None:
-    """Return part_id or None if unresolvable."""
+    """Return part_id or None if unresolvable.
+
+    listing_id (when present, non-zero) wins via raw.listing_id_map. Otherwise
+    fall back to a normalized prefix match against DIRECT_ITEM_MAP — the longest
+    matching key wins, so a specific key is preferred over a shorter one.
+    """
     lid = coerce(listing_id)
     if lid and lid != "0":
         return part_map.get(lid)
-    # listing_id is 0 or null — try item_name match
-    key = (item_name or "").strip().lower()
-    sku = DIRECT_ITEM_MAP.get(key)
+    # listing_id is null/0 — match item_name against DIRECT_ITEM_MAP (normalized).
+    norm = normalize_name(item_name)
+    if not norm:
+        return None
+    sku = None
+    best_len = -1
+    for key, key_sku in DIRECT_ITEM_MAP.items():
+        nkey = normalize_name(key)
+        if (norm == nkey or norm.startswith(nkey + " ")) and len(nkey) > best_len:
+            sku, best_len = key_sku, len(nkey)
     return sku_to_part.get(sku) if sku else None
 
 
@@ -178,13 +233,18 @@ def load(dry_run: bool = False):
         order_id_map = {r["source_order_id"]: r["order_id"] for r in cur.fetchall()}
 
     # -- Order Items ------------------------------------------------------
-    cur.execute("SELECT raw_listing_id, order_id FROM core.order_items")
-    existing_items = {(str(r["raw_listing_id"]), r["order_id"]) for r in cur.fetchall()}
+    # Dedup key includes part_id so two distinct null-listing_id line items on
+    # the same order (e.g. a "Ground - 1 Tray" plus an "Elder's Dice Vault",
+    # both listing_id NULL) are not collapsed into one and wrongly skipped.
+    cur.execute("SELECT raw_listing_id, part_id, order_id FROM core.order_items")
+    existing_items = {
+        (str(r["raw_listing_id"]), r["part_id"], r["order_id"]) for r in cur.fetchall()
+    }
 
     cur.execute("SELECT * FROM raw.etsy_order_items")
     raw_items = cur.fetchall()
 
-    inserted_items = skipped_items = 0
+    inserted_items = skipped_items = existing_items_n = 0
 
     for r in raw_items:
         src_order_id = coerce(r["order_id"])
@@ -197,6 +257,18 @@ def load(dry_run: bool = False):
         if not part_id:
             print(f"  UNRESOLVED item: listing_id={r['listing_id']!r}  title={str(r['item_name'])[:60]!r}")
             skipped_items += 1
+            continue
+
+        # Idempotency guard: skip rows already in core.order_items. Key must
+        # match how raw_listing_id is stored on insert below (int, else None)
+        # and how existing_items was built: (str(raw_listing_id), part_id, order_id).
+        lid_for_key = (
+            int(coerce(r["listing_id"]))
+            if coerce(r["listing_id"]) and coerce(r["listing_id"]) != "0"
+            else None
+        )
+        if (str(lid_for_key), part_id, core_order_id) in existing_items:
+            existing_items_n += 1
             continue
 
         if dry_run:
@@ -218,7 +290,7 @@ def load(dry_run: bool = False):
         ))
         inserted_items += 1
 
-    print(f"Order items: {inserted_items} inserted, {skipped_items} skipped")
+    print(f"Order items: {inserted_items} inserted, {existing_items_n} already present, {skipped_items} skipped (unresolved)")
 
     if not dry_run:
         conn.commit()
