@@ -36,7 +36,10 @@ INSERT INTO core.parts (sku, part_type, name, etsy_listing_id, is_active) VALUES
     ('ENR-ADD-001',     'component', 'Engrave Your Vault Add-On',                  NULL,       true),  -- [PROPOSED SKU]
 
     -- Direct/in-person sales
-    ('DT-GRD-001',      'good', 'Ground Tray',                                     NULL,       true);  -- [PROPOSED SKU] from direct sale "Ground - 1 Tray"
+    ('DT-GRD-001',      'good', 'Ground Tray',                                     NULL,       true),  -- [PROPOSED SKU] from direct sale "Ground - 1 Tray"
+
+    -- Custom one-off builds
+    ('CW-PLK-001',      'good', 'Custom Solid Wood and Brass Plinko Game',         NULL,       true);  -- [PROPOSED SKU] one-off custom order 4028192890 (2 x $150); listing_id NULL -> resolved by title via DIRECT_ITEM_MAP
 
 -- ---------------------------------------------------------------------------
 -- raw.listing_id_map

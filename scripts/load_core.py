@@ -52,6 +52,10 @@ DIRECT_ITEM_MAP = {
     # Brian-confirmed GENUINE ZERO SALES, so this sale cannot belong to it.
     "elder's dice vault":                                        "DT-VLT-001",
     "ground - 1 tray":                                           "DT-GRD-001",
+    # "Custom Solid Wood and Brass Plinko Game" ($150 x 2, order 4028192890) is a
+    # one-off custom build with listing_id NULL, so it resolves by title prefix.
+    # See seed_parts.sql (CW-PLK-001). Brian's call: model it as its own part.
+    "custom solid wood and brass plinko game":                   "CW-PLK-001",
 }
 
 
@@ -275,6 +279,20 @@ def load(dry_run: bool = False):
             inserted_items += 1
             continue
 
+        # line_total convention: the Etsy v3 API transaction object carries only a
+        # per-unit `price` (mapped to raw.price), NOT a line-extended total — so
+        # raw.item_total is NULL for every API-ingested row. Derive line_total as
+        # quantity * unit_price, matching how the CSV-era good rows (<=130) were
+        # computed. Fall back to raw.item_total when it IS present (legacy CSV
+        # loads) so historical behaviour is preserved. Order-level discounts are
+        # intentionally NOT applied at the line (they live on core.orders.subtotal),
+        # consistent with the existing good rows.
+        quantity = int(r["quantity"] or 1)
+        unit_price = r["price"] or Decimal("0")
+        line_total = r["item_total"]
+        if line_total is None:
+            line_total = unit_price * quantity
+
         cur.execute("""
             INSERT INTO core.order_items
                 (order_id, part_id, quantity, unit_price, line_total, raw_title, raw_listing_id)
@@ -282,9 +300,9 @@ def load(dry_run: bool = False):
         """, (
             core_order_id,
             part_id,
-            int(r["quantity"] or 1),
-            r["price"]      or Decimal("0"),
-            r["item_total"] or Decimal("0"),
+            quantity,
+            unit_price,
+            line_total,
             coerce(r["item_name"]),
             int(r["listing_id"]) if coerce(r["listing_id"]) and coerce(r["listing_id"]) != "0" else None,
         ))
