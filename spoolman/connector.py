@@ -74,6 +74,33 @@ def _resolve_spoolman_base_url() -> str:
 SPOOLMAN_BASE_URL = _resolve_spoolman_base_url()
 HTTP_TIMEOUT = float(os.environ.get("SPOOLMAN_HTTP_TIMEOUT", "15"))
 
+# Accepted manufacturer-barcode lengths: UPC-A (12) and EAN-13 (13). The scanner
+# was previously false-decoding 8-digit (UPC_E/EAN_8) fragments of the real
+# EAN-13 box code and binding garbage; this set is the server-side guard. Tunable
+# so a future format (e.g. EAN_8) can be allowed by editing one line.
+VALID_BARCODE_LENGTHS: set[int] = {12, 13}
+
+
+class InvalidBarcodeError(ValueError):
+    """Raised when a barcode is not a valid UPC-A / EAN-13 numeric string."""
+
+
+def validate_barcode(barcode: Optional[str]) -> str:
+    """Validate and normalize a scanned/typed barcode.
+
+    Accepts only an all-numeric string whose length is in ``VALID_BARCODE_LENGTHS``
+    (12 = UPC-A, 13 = EAN-13). Leading/trailing whitespace is stripped. Raises
+    ``InvalidBarcodeError`` (a ``ValueError``) with an operator-facing message on
+    anything else. Returns the cleaned barcode on success.
+    """
+    cleaned = (barcode or "").strip()
+    if not cleaned.isdigit() or len(cleaned) not in VALID_BARCODE_LENGTHS:
+        lengths = "- or ".join(str(n) for n in sorted(VALID_BARCODE_LENGTHS))
+        raise InvalidBarcodeError(
+            f"Barcode must be a {lengths}-digit UPC/EAN (got '{cleaned}')."
+        )
+    return cleaned
+
 # Common filament densities (g/cm^3). `POST /filament` requires a density; for
 # Option-3 manual entry we accept an explicit value, else fall back by material,
 # else to PLA. These are nominal values for autofill convenience only.
@@ -249,6 +276,22 @@ class SpoolmanClient:
     def get_filament(self, filament_id: int) -> dict:
         return self._get(f"filament/{filament_id}")
 
+    def filament_exists(self, filament_id: int) -> bool:
+        """Return True if `filament_id` still resolves in Spoolman, False on 404.
+
+        Used to detect orphaned mappings (a map row whose Spoolman filament was
+        deleted). Any non-404 HTTP/transport error is re-raised so a transient
+        Spoolman outage is NOT mistaken for a deletion.
+        """
+        try:
+            r = self.session.get(self._url(f"filament/{filament_id}"), timeout=self.timeout)
+        except requests.RequestException:
+            raise
+        if r.status_code == 404:
+            return False
+        r.raise_for_status()
+        return True
+
     # -- spool -------------------------------------------------------------- #
     def create_spool(
         self,
@@ -333,6 +376,29 @@ def lookup_barcode(barcode: str, conn=None) -> Optional[dict]:
             conn.close()
 
 
+def resolve_mapping(
+    barcode: str, client: Optional["SpoolmanClient"] = None
+) -> Optional[dict]:
+    """Look up a barcode AND verify the mapped Spoolman filament still exists.
+
+    This is the orphan-aware resolver (Fix 4). On a map HIT whose
+    `spoolman_filament_id` no longer resolves in Spoolman (404 — the filament was
+    deleted out from under the binding), the stale map row is DELETED and None is
+    returned, so callers treat it as a miss (prompt for re-entry / re-create).
+
+    Returns the mapping dict on a live hit, else None.
+    """
+    client = client or SpoolmanClient()
+    hit = lookup_barcode(barcode)
+    if not hit:
+        return None
+    if client.filament_exists(hit["spoolman_filament_id"]):
+        return hit
+    # Orphaned binding: drop the stale row so the barcode is re-bindable.
+    delete_mapping(barcode)
+    return None
+
+
 def insert_mapping(
     barcode: str,
     spoolman_filament_id: int,
@@ -412,7 +478,10 @@ def intake(
         raise ValueError("roll_count must be >= 1")
 
     client = client or SpoolmanClient()
-    hit = lookup_barcode(record.barcode)
+    # Orphan-aware: a HIT whose mapped filament was deleted in Spoolman is
+    # cleaned up here and treated as a miss, so we fall through to Option 3 and
+    # re-create + re-bind from the provided attributes instead of erroring.
+    hit = resolve_mapping(record.barcode, client)
 
     if hit:
         # -------- Option 2: known SKU, fast path ---------------------------- #

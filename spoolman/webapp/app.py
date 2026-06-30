@@ -112,9 +112,15 @@ def lookup(barcode: str = Query(..., min_length=1)) -> dict:
     On a hit, returns the denormalized brand/material/color so the page can show
     the operator what they're adding to before they pick a roll count.
     """
-    barcode = barcode.strip()
     try:
-        row = C.lookup_barcode(barcode)
+        barcode = C.validate_barcode(barcode)
+    except C.InvalidBarcodeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    try:
+        # Orphan-aware resolve: a hit whose mapped filament was deleted in
+        # Spoolman is cleaned up and returned as a miss, so the UI prompts for
+        # entry instead of binding to a dead filament_id (Fix 4).
+        row = C.resolve_mapping(barcode, _client)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"lookup failed: {exc}")
     if not row:
@@ -140,7 +146,10 @@ def intake(body: IntakeBody) -> dict:
     handler just forwards a `FilamentRecord` plus roll_count + location. On an
     Option-3 miss the barcode is auto-bound so the next scan is an Option-2 hit.
     """
-    barcode = body.barcode.strip()
+    try:
+        barcode = C.validate_barcode(body.barcode)
+    except C.InvalidBarcodeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     record = C.FilamentRecord(
         barcode=barcode,
         brand=(body.brand or None),

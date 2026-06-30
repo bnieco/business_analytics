@@ -141,6 +141,10 @@
   let html5Qr = null;
   let currentBarcode = null;
   let isKnown = false;
+  // Fix 2 — consecutive-read confirmation state (camera path only).
+  let lastScanValue = null;
+  let scanRepeatCount = 0;
+  const REQUIRED_REPEATS = 2;
 
   // ---- helpers ---------------------------------------------------------- //
   function show(el) { el.classList.remove("hidden"); }
@@ -162,20 +166,25 @@
       const config = {
         fps: 12,
         qrbox: { width: 260, height: 140 },
-        // 1D retail barcodes on filament boxes (UPC-A / EAN-13) + QR fallbacks.
+        // Restricted to the only two formats real filament box barcodes use:
+        // UPC-A (12 digit) and EAN-13 (13 digit). The 8-digit formats (UPC_E,
+        // EAN_8) were producing false partial decodes of the EAN-13 box code,
+        // binding garbage 8-digit values; CODE_128/QR were unused. See the
+        // 2026-06-30 scanner-reliability hardening in the Phase 2 build log.
         formatsToSupport: [
           Html5QrcodeSupportedFormats.UPC_A,
-          Html5QrcodeSupportedFormats.UPC_E,
-          Html5QrcodeSupportedFormats.EAN_13,
-          Html5QrcodeSupportedFormats.EAN_8,
-          Html5QrcodeSupportedFormats.CODE_128,
-          Html5QrcodeSupportedFormats.QR_CODE
+          Html5QrcodeSupportedFormats.EAN_13
         ]
       };
+      // Require two CONSECUTIVE identical reads before accepting a camera scan.
+      // A single decode is reset on each new/differing value; misreads rarely
+      // repeat the exact same wrong value twice in a row, so this filters them.
+      lastScanValue = null;
+      scanRepeatCount = 0;
       await html5Qr.start(
         { facingMode: "environment" },
         config,
-        (decoded) => { stopScan().then(() => doLookup(decoded)); },
+        onScanDecoded,
         () => {} // per-frame decode failures are normal; ignore
       );
       hide($("startScanBtn")); show($("stopScanBtn"));
@@ -185,6 +194,28 @@
       show($("startScanBtn")); hide($("stopScanBtn"));
     }
   }
+  // Camera decode callback: only accept after REQUIRED_REPEATS identical reads.
+  function onScanDecoded(decoded) {
+    const val = (decoded || "").trim();
+    if (!val) { return; }
+    if (val === lastScanValue) {
+      scanRepeatCount += 1;
+    } else {
+      lastScanValue = val;
+      scanRepeatCount = 1;
+      $("scanErr").textContent = "Hold steady…";
+      return;
+    }
+    if (scanRepeatCount < REQUIRED_REPEATS) {
+      $("scanErr").textContent = "Hold steady…";
+      return;
+    }
+    // Confirmed: same value twice in a row -> accept and look it up.
+    lastScanValue = null;
+    scanRepeatCount = 0;
+    stopScan().then(() => doLookup(val));
+  }
+
   async function stopScan() {
     try { if (html5Qr) { await html5Qr.stop(); await html5Qr.clear(); } }
     catch (e) { /* already stopped */ }
@@ -200,8 +231,8 @@
     $("scanErr").textContent = "Looking up…";
     try {
       const r = await fetch("/api/lookup?barcode=" + encodeURIComponent(barcode));
-      if (!r.ok) throw new Error("HTTP " + r.status);
       const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || ("HTTP " + r.status));
       $("scanErr").textContent = "";
       if (data.found) {
         isKnown = true;
