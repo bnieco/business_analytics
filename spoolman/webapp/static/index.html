@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <!-- Mobile-first viewport for iPhone Safari. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>ENR Filament Intake</title>
+  <!--
+    CAMERA NOTE: getUserMedia (the live scanner) only runs in a SECURE CONTEXT —
+    HTTPS, or http://localhost / http://127.0.0.1. It therefore works for local
+    dev on localhost with NO certificate. Serving to the iPhone over the LAN
+    needs a genuinely-trusted HTTPS cert (Stage C). The manual barcode text box
+    below works everywhere, secure context or not.
+
+    iOS Safari has NO native BarcodeDetector, so we use the html5-qrcode WASM
+    library (loaded from CDN) as the sole camera-capture path.
+  -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    :root { --bg:#14110d; --card:#211c15; --ink:#f3ead9; --muted:#b6a888;
+            --accent:#c8a24a; --good:#5aa469; --line:#3a3023; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;
+           background:var(--bg); color:var(--ink); line-height:1.4;
+           padding:env(safe-area-inset-top) 0 2rem; }
+    header { padding:1rem 1.1rem .6rem; border-bottom:1px solid var(--line); }
+    header h1 { margin:0; font-size:1.2rem; letter-spacing:.02em; }
+    header p { margin:.2rem 0 0; color:var(--muted); font-size:.82rem; }
+    main { padding:1rem 1.1rem; max-width:560px; margin:0 auto; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+            padding:1rem; margin-bottom:1rem; }
+    label { display:block; font-size:.82rem; color:var(--muted); margin:.7rem 0 .25rem; }
+    input { width:100%; font-size:1.05rem; padding:.7rem .8rem; border-radius:10px;
+            border:1px solid var(--line); background:#1a1610; color:var(--ink); }
+    input[readonly] { color:var(--muted); }
+    button { width:100%; font-size:1.05rem; font-weight:600; padding:.85rem;
+             border:none; border-radius:11px; background:var(--accent); color:#1a1408;
+             margin-top:1rem; cursor:pointer; }
+    button.secondary { background:transparent; color:var(--accent);
+                       border:1px solid var(--accent); }
+    button:disabled { opacity:.5; }
+    #reader { width:100%; border-radius:12px; overflow:hidden; }
+    .row { display:flex; gap:.7rem; }
+    .row > div { flex:1; }
+    .hidden { display:none !important; }
+    .pill { display:inline-block; font-size:.74rem; padding:.15rem .55rem; border-radius:999px;
+            background:#2c2517; color:var(--accent); border:1px solid var(--line); }
+    .kv { font-size:.95rem; margin:.15rem 0; }
+    .kv b { color:var(--ink); }
+    .muted { color:var(--muted); font-size:.85rem; }
+    .err { color:#e08a7a; font-size:.88rem; margin-top:.6rem; min-height:1em; }
+    .ok-box { border:1px solid var(--good); }
+    h2 { font-size:1rem; margin:.1rem 0 .3rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ENR Filament Intake</h1>
+    <p>Scan a filament box barcode to log spools into Spoolman.</p>
+  </header>
+
+  <main>
+    <!-- STEP 1 — scan / enter barcode -->
+    <section id="scanCard" class="card">
+      <h2>1 · Barcode</h2>
+      <div id="reader"></div>
+      <button id="startScanBtn" class="secondary" type="button">Start camera scan</button>
+      <button id="stopScanBtn" class="secondary hidden" type="button">Stop camera</button>
+      <label for="manualBarcode">Or type / paste the barcode</label>
+      <input id="manualBarcode" inputmode="numeric" autocomplete="off"
+             placeholder="e.g. 6975337470015" />
+      <button id="lookupBtn" type="button">Look up barcode</button>
+      <div id="scanErr" class="err"></div>
+    </section>
+
+    <!-- STEP 2a — KNOWN barcode (Option 2) -->
+    <section id="knownCard" class="card hidden">
+      <span class="pill">Known barcode · Option 2</span>
+      <h2 style="margin-top:.5rem;">Matched filament</h2>
+      <div class="kv"><b id="kBrand"></b></div>
+      <div class="kv muted"><span id="kMaterial"></span> · <span id="kColor"></span></div>
+      <div class="kv muted">barcode <span id="kBarcode"></span></div>
+    </section>
+
+    <!-- STEP 2b — NEW barcode (Option 3) -->
+    <section id="newCard" class="card hidden">
+      <span class="pill">New barcode · Option 3</span>
+      <h2 style="margin-top:.5rem;">Enter filament once</h2>
+      <p class="muted">First time we've seen this barcode. Fill these once and it
+        will be auto-recognized next time.</p>
+      <label for="fBrand">Brand / vendor *</label>
+      <input id="fBrand" placeholder="e.g. Bambu Lab" />
+      <label for="fMaterial">Material</label>
+      <input id="fMaterial" placeholder="e.g. PLA" />
+      <label for="fColor">Color name</label>
+      <input id="fColor" placeholder="e.g. Matte Black" />
+      <div class="row">
+        <div>
+          <label for="fDiameter">Diameter (mm)</label>
+          <input id="fDiameter" inputmode="decimal" value="1.75" />
+        </div>
+        <div>
+          <label for="fSpoolWeight">Spool wt (g)</label>
+          <input id="fSpoolWeight" inputmode="decimal" value="1000" />
+        </div>
+      </div>
+      <label for="fDensity">Density (g/cm³) — blank = auto by material</label>
+      <input id="fDensity" inputmode="decimal" placeholder="PLA 1.24" />
+    </section>
+
+    <!-- STEP 3 — roll count + location (both options) -->
+    <section id="logCard" class="card hidden">
+      <h2>Roll count &amp; location</h2>
+      <div class="row">
+        <div>
+          <label for="rollCount">Roll count (multipack)</label>
+          <input id="rollCount" inputmode="numeric" value="1" />
+        </div>
+        <div>
+          <label for="location">Shelf-code location</label>
+          <input id="location" placeholder="e.g. A1" />
+        </div>
+      </div>
+      <button id="submitBtn" type="button">Log spool(s)</button>
+      <button id="cancelBtn" class="secondary" type="button">Cancel / rescan</button>
+      <div id="logErr" class="err"></div>
+    </section>
+
+    <!-- STEP 4 — success -->
+    <section id="successCard" class="card ok-box hidden">
+      <h2 style="color:var(--good);">✓ Logged</h2>
+      <div id="successBody"></div>
+      <button id="againBtn" type="button">Scan another</button>
+    </section>
+  </main>
+
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  let html5Qr = null;
+  let currentBarcode = null;
+  let isKnown = false;
+
+  // ---- helpers ---------------------------------------------------------- //
+  function show(el) { el.classList.remove("hidden"); }
+  function hide(el) { el.classList.add("hidden"); }
+  function resetTo(step) {
+    [knownCard, newCard, logCard, successCard].forEach(hide);
+    $("scanErr").textContent = "";
+    $("logErr").textContent = "";
+    if (step === "scan") { show(scanCard); }
+  }
+  const scanCard = $("scanCard"), knownCard = $("knownCard"),
+        newCard = $("newCard"), logCard = $("logCard"), successCard = $("successCard");
+
+  // ---- camera scan (html5-qrcode WASM; secure-context only) ------------- //
+  async function startScan() {
+    $("scanErr").textContent = "";
+    try {
+      html5Qr = new Html5Qrcode("reader");
+      const config = {
+        fps: 12,
+        qrbox: { width: 260, height: 140 },
+        // 1D retail barcodes on filament boxes (UPC-A / EAN-13) + QR fallbacks.
+        formatsToSupport: [
+          Html5QrcodeSupportedFormats.UPC_A,
+          Html5QrcodeSupportedFormats.UPC_E,
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.QR_CODE
+        ]
+      };
+      await html5Qr.start(
+        { facingMode: "environment" },
+        config,
+        (decoded) => { stopScan().then(() => doLookup(decoded)); },
+        () => {} // per-frame decode failures are normal; ignore
+      );
+      hide($("startScanBtn")); show($("stopScanBtn"));
+    } catch (e) {
+      $("scanErr").textContent =
+        "Camera unavailable (needs HTTPS or localhost). Use manual entry below. [" + e + "]";
+      show($("startScanBtn")); hide($("stopScanBtn"));
+    }
+  }
+  async function stopScan() {
+    try { if (html5Qr) { await html5Qr.stop(); await html5Qr.clear(); } }
+    catch (e) { /* already stopped */ }
+    html5Qr = null;
+    show($("startScanBtn")); hide($("stopScanBtn"));
+  }
+
+  // ---- lookup ----------------------------------------------------------- //
+  async function doLookup(barcode) {
+    barcode = (barcode || "").trim();
+    if (!barcode) { $("scanErr").textContent = "Enter or scan a barcode first."; return; }
+    currentBarcode = barcode;
+    $("scanErr").textContent = "Looking up…";
+    try {
+      const r = await fetch("/api/lookup?barcode=" + encodeURIComponent(barcode));
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      $("scanErr").textContent = "";
+      if (data.found) {
+        isKnown = true;
+        $("kBrand").textContent = data.filament.brand || "(brand unrecorded)";
+        $("kMaterial").textContent = data.filament.material || "—";
+        $("kColor").textContent = data.filament.color || "—";
+        $("kBarcode").textContent = barcode;
+        show(knownCard);
+      } else {
+        isKnown = false;
+        show(newCard);
+      }
+      show(logCard);
+      logCard.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch (e) {
+      $("scanErr").textContent = "Lookup failed: " + e;
+    }
+  }
+
+  // ---- submit / intake -------------------------------------------------- //
+  async function doIntake() {
+    $("logErr").textContent = "";
+    const rollCount = parseInt($("rollCount").value, 10);
+    if (!rollCount || rollCount < 1) { $("logErr").textContent = "Roll count must be ≥ 1."; return; }
+    const body = {
+      barcode: currentBarcode,
+      roll_count: rollCount,
+      location: $("location").value.trim() || null
+    };
+    if (!isKnown) {
+      if (!$("fBrand").value.trim()) {
+        $("logErr").textContent = "Brand / vendor is required for a new barcode."; return;
+      }
+      body.brand = $("fBrand").value.trim();
+      body.material = $("fMaterial").value.trim() || null;
+      body.color = $("fColor").value.trim() || null;
+      body.diameter = parseFloat($("fDiameter").value) || 1.75;
+      body.spool_weight = $("fSpoolWeight").value ? parseFloat($("fSpoolWeight").value) : null;
+      body.density = $("fDensity").value ? parseFloat($("fDensity").value) : null;
+    }
+    $("submitBtn").disabled = true;
+    try {
+      const r = await fetch("/api/intake", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || ("HTTP " + r.status));
+      renderSuccess(data);
+    } catch (e) {
+      $("logErr").textContent = "Intake failed: " + e;
+    } finally {
+      $("submitBtn").disabled = false;
+    }
+  }
+
+  function renderSuccess(d) {
+    resetTo("done");
+    const opt = d.path === "option2" ? "Option 2 (known)" : "Option 3 (new + bound)";
+    let html = "<div class='kv'><b>" + d.spools_created + "</b> spool(s) created — " + opt + "</div>";
+    html += "<div class='kv muted'>spool ids: " + (d.spool_ids.join(", ") || "—") + "</div>";
+    html += "<div class='kv muted'>filament id: " + d.filament_id + "</div>";
+    if (d.path === "option3") {
+      html += "<div class='kv muted'>barcode bound — next scan will be a fast Option-2 hit.</div>";
+    }
+    $("successBody").innerHTML = html;
+    show(successCard);
+    successCard.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
+  // ---- wiring ----------------------------------------------------------- //
+  $("startScanBtn").addEventListener("click", startScan);
+  $("stopScanBtn").addEventListener("click", stopScan);
+  $("lookupBtn").addEventListener("click", () => doLookup($("manualBarcode").value));
+  $("manualBarcode").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); doLookup($("manualBarcode").value); }
+  });
+  $("submitBtn").addEventListener("click", doIntake);
+  $("cancelBtn").addEventListener("click", () => { resetTo("scan"); });
+  $("againBtn").addEventListener("click", () => {
+    $("manualBarcode").value = ""; currentBarcode = null; isKnown = false;
+    ["fBrand","fMaterial","fColor","fDensity","location"].forEach((id) => $(id).value = "");
+    $("fDiameter").value = "1.75"; $("fSpoolWeight").value = "1000"; $("rollCount").value = "1";
+    resetTo("scan"); window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+})();
+</script>
+</body>
+</html>
