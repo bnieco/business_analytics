@@ -24,9 +24,18 @@ Verified Spoolman API contract (Phase 1, v0.23.1):
   * Extra-field values are stored JSON-ENCODED, so `extra.barcode` must be set
     to `json.dumps(<barcode>)`, and read back with `json.loads(...)`.
 
-Config comes from the analytics repo `.env` (BUSINESS_DB_* keys). The Spoolman
-base URL defaults to the live NAS instance and can be overridden with
-SPOOLMAN_BASE_URL.
+Config is environment-driven so the SAME code runs in local dev and in the NAS
+container:
+
+  * Spoolman API base: ``SPOOLMAN_API_URL`` (default the local-dev
+    ``http://10.0.0.16:7912``). The ``/api/v1`` suffix is appended automatically
+    if absent, so the NAS container just sets ``SPOOLMAN_API_URL=http://spoolman:8000``
+    (container name + internal port on the ``postgres_default`` Docker network).
+    The legacy ``SPOOLMAN_BASE_URL`` (which may include ``/api/v1``) is still honored.
+  * Business DB: ``BUSINESS_DB_HOST`` / ``BUSINESS_DB_PORT`` / ``BUSINESS_DB_NAME`` /
+    ``BUSINESS_DB_USER`` / ``BUSINESS_DB_PASSWORD``. Local dev reads these from the
+    analytics repo ``.env`` (host ``10.0.0.16``, port ``5433``); the NAS container
+    sets host ``postgres16`` port ``5432`` (peer container, internal port).
 """
 from __future__ import annotations
 
@@ -44,9 +53,25 @@ from dotenv import load_dotenv
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
-SPOOLMAN_BASE_URL = os.environ.get(
-    "SPOOLMAN_BASE_URL", "http://10.0.0.16:7912/api/v1"
-).rstrip("/")
+def _resolve_spoolman_base_url() -> str:
+    """Resolve the Spoolman ``/api/v1`` base URL from the environment.
+
+    Precedence: ``SPOOLMAN_API_URL`` (new, the documented knob), then the legacy
+    ``SPOOLMAN_BASE_URL``, then the local-dev default. Whatever is supplied, the
+    ``/api/v1`` path suffix is appended if missing so callers can set a bare
+    origin (e.g. ``http://spoolman:8000`` on the NAS) and still hit the API.
+    """
+    raw = (
+        os.environ.get("SPOOLMAN_API_URL")
+        or os.environ.get("SPOOLMAN_BASE_URL")
+        or "http://10.0.0.16:7912"
+    ).rstrip("/")
+    if not raw.endswith("/api/v1"):
+        raw = f"{raw}/api/v1"
+    return raw
+
+
+SPOOLMAN_BASE_URL = _resolve_spoolman_base_url()
 HTTP_TIMEOUT = float(os.environ.get("SPOOLMAN_HTTP_TIMEOUT", "15"))
 
 # Common filament densities (g/cm^3). `POST /filament` requires a density; for

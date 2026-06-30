@@ -1,0 +1,8 @@
+# Slim runtime deps for the Filament Intake container (Stage C).
+# Deliberately a subset of the repo's root requirements.txt — only what the
+# FastAPI intake app + connector need at runtime (no pandas/jupyter/bigquery).
+fastapi>=0.115
+uvicorn[standard]>=0.30
+requests>=2.31
+psycopg2-binary>=2.9
+python-dotenv>=1.0

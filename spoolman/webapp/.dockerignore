@@ -1,0 +1,13 @@
+# Build-context hygiene for the filament-intake image. Context is the deploy
+# folder containing the spoolman/ package; keep cruft and secrets out of the image.
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.DS_Store
+**/.pytest_cache/
+# Never bake env/secrets into the image — config is injected at run time.
+.env
+**/.env
+*.env.bak*
+# The live test is dev-only; not needed in the image.
+spoolman/test_connector_live.py

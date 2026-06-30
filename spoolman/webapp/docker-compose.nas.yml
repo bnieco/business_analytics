@@ -1,0 +1,38 @@
+# ENR Filament Intake — Container Manager Project (Stage C), NAS deployment.
+#
+# TEMPLATE. Copy into Container Manager > Project > "Create" (or paste as the
+# project's docker-compose.yml). Then replace REPLACE_WITH_BUSINESS_DB_PASSWORD
+# with the literal BUSINESS_DB_PASSWORD value from the analytics repo .env.
+#
+# Synology Container Manager gotchas applied (memory: synology-container-manager-gotchas):
+#   * Env values are INLINE LITERALS — CM does NOT interpolate ${VAR} from a .env.
+#   * Numeric ports are UNQUOTED.
+#   * postgres_default is declared EXTERNAL (it already exists; do not recreate it).
+#   * No bind mounts here, so there are no host dirs to pre-create.
+#   * Peers are reached by CONTAINER NAME + INTERNAL port, never host IP:published.
+services:
+  filament-intake:
+    container_name: filament-intake
+    build:
+      context: .
+      dockerfile: spoolman/webapp/Dockerfile
+    restart: unless-stopped
+    ports:
+      - 8743:8000          # host:container — host 8743 is free (Spoolman 7912, dashboards 8788)
+    environment:
+      # Spoolman peer on postgres_default — container name + INTERNAL port 8000
+      # (NOT http://10.0.0.16:7912, which is the host-published port for Mac dev).
+      SPOOLMAN_API_URL: http://spoolman:8000
+      # Business Postgres peer — container name + INTERNAL port 5432
+      # (NOT 10.0.0.16:5433, which is the host-published port for Mac dev).
+      BUSINESS_DB_HOST: postgres16
+      BUSINESS_DB_PORT: 5432
+      BUSINESS_DB_NAME: business
+      BUSINESS_DB_USER: brian_admin
+      BUSINESS_DB_PASSWORD: REPLACE_WITH_BUSINESS_DB_PASSWORD
+    networks:
+      - postgres_default
+
+networks:
+  postgres_default:
+    external: true
