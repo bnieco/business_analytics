@@ -50,6 +50,11 @@
     .muted { color:var(--muted); font-size:.85rem; }
     .err { color:#e08a7a; font-size:.88rem; margin-top:.6rem; min-height:1em; }
     .ok-box { border:1px solid var(--good); }
+    /* Prominent confirmation of the barcode the scanner / manual lookup read,
+       so it is legible at a glance on a phone. Used on both Option 2 & 3. */
+    .scanned { font-size:1.15rem; font-weight:700; color:var(--ink);
+               letter-spacing:.02em; margin:.45rem 0 .2rem; }
+    .scanned span { color:var(--accent); font-variant-numeric:tabular-nums; }
     h2 { font-size:1rem; margin:.1rem 0 .3rem; }
   </style>
 </head>
@@ -76,15 +81,16 @@
     <!-- STEP 2a — KNOWN barcode (Option 2) -->
     <section id="knownCard" class="card hidden">
       <span class="pill">Known barcode · Option 2</span>
+      <div class="scanned">Scanned: <span id="kBarcode"></span></div>
       <h2 style="margin-top:.5rem;">Matched filament</h2>
       <div class="kv"><b id="kBrand"></b></div>
       <div class="kv muted"><span id="kMaterial"></span> · <span id="kColor"></span></div>
-      <div class="kv muted">barcode <span id="kBarcode"></span></div>
     </section>
 
     <!-- STEP 2b — NEW barcode (Option 3) -->
     <section id="newCard" class="card hidden">
       <span class="pill">New barcode · Option 3</span>
+      <div class="scanned">Scanned: <span id="nBarcode"></span></div>
       <h2 style="margin-top:.5rem;">Enter filament once</h2>
       <p class="muted">First time we've seen this barcode. Fill these once and it
         will be auto-recognized next time.</p>
@@ -243,6 +249,7 @@
         show(knownCard);
       } else {
         isKnown = false;
+        $("nBarcode").textContent = barcode;
         show(newCard);
       }
       show(logCard);
@@ -315,6 +322,7 @@
   $("cancelBtn").addEventListener("click", () => { resetTo("scan"); });
   $("againBtn").addEventListener("click", () => {
     $("manualBarcode").value = ""; currentBarcode = null; isKnown = false;
+    $("kBarcode").textContent = ""; $("nBarcode").textContent = "";
     ["fBrand","fMaterial","fColor","fDensity","location"].forEach((id) => $(id).value = "");
     $("fDiameter").value = "1.75"; $("fSpoolWeight").value = "1000"; $("rollCount").value = "1";
     resetTo("scan"); window.scrollTo({ top: 0, behavior: "smooth" });
