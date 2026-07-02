@@ -1,0 +1,5 @@
+# Slim runtime deps for the label-service container.
+# The engine itself is stdlib-only; the service adds FastAPI + YAML config.
+fastapi>=0.115
+uvicorn[standard]>=0.30
+PyYAML>=6.0

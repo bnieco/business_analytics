@@ -1,0 +1,44 @@
+# ENR Label Printing Service — Container Manager Project, NAS deployment.
+#
+# TEMPLATE — NOT YET DEPLOYED. Copy into Container Manager > Project >
+# "Create" (or paste as the project's docker-compose.yml) when Brian runs the
+# deploy step. Deploy folder on the NAS: /volume1/docker/label-service/
+# containing the `labels/` package + this file.
+#
+# Synology Container Manager gotchas applied (memory: synology-container-manager-gotchas):
+#   * Env values are INLINE LITERALS — CM does NOT interpolate ${VAR} from a .env.
+#   * Numeric ports are UNQUOTED.
+#   * postgres_default is declared EXTERNAL (it already exists; do not recreate it).
+#   * No bind mounts here, so there are no host dirs to pre-create.
+#   * Peers reach this service as http://label-service:8000 (container name +
+#     INTERNAL port), never the host-published 8744 (bridge containers cannot
+#     hairpin the host port).
+#
+# NOTE: this service has NO database dependency; it joins postgres_default so
+# app containers on that network (garage inventory, filament-intake if ever
+# wanted) can reach it by container name. The printer (10.0.0.200:9100) is on
+# the LAN — the container -> LAN path is the same one filament-intake uses.
+#
+# FIRST-DEPLOY VERIFICATION (no printer bytes): set LABELS_DRY_RUN: 1 below,
+# bring the container up, curl /api/health + /templates + a /print (response
+# will say "dry_run": true and nothing touches the printer), THEN set it to 0
+# and rebuild the project for real printing.
+services:
+  label-service:
+    container_name: label-service
+    build:
+      context: .
+      dockerfile: labels/service/Dockerfile
+    restart: unless-stopped
+    ports:
+      - 8744:8000          # host:container — 8744 free (filament 8743, Spoolman 7912, dashboards 8788)
+    environment:
+      # 1 = dry-run (assemble + log, never open a printer socket) — first-deploy
+      # verification mode. Set to 0 to enable real printing. Inline literal.
+      LABELS_DRY_RUN: 1
+    networks:
+      - postgres_default
+
+networks:
+  postgres_default:
+    external: true

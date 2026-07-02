@@ -1,0 +1,24 @@
+# Label Printing Service — PRINTERS registry (v1).
+#
+# One entry per physical printer. Nothing about printers is hardcoded in
+# Python; the service resolves everything through this file.
+#
+# Fields:
+#   model      — human-readable hardware model.
+#   ip / port  — LAN address; all v1 printers speak raw TCP 9100.
+#   transport  — raw9100 (the only transport implemented).
+#   dialect    — command-grammar family. v1 implements ONLY `ptouch-template`
+#                (QL-720NW, transferred templates + ^TS key). `raster`
+#                (PT-P750W, CV_PTE550WP750WP710BT reference) is a deferred,
+#                separately-scoped phase (Argus B1 / Brian 2026-07-02) — the
+#                field exists so raster slots in WITHOUT a schema change, but
+#                a v1 print to a non-ptouch-template printer is rejected 400.
+#   media      — what is loaded, for humans reading GET /printers.
+printers:
+  ql720nw:
+    model: QL-720NW
+    ip: 10.0.0.200
+    port: 9100
+    transport: raw9100
+    dialect: ptouch-template
+    media: "DK-2205 62mm continuous"

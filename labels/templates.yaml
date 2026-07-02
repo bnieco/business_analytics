@@ -1,0 +1,50 @@
+# Label Printing Service — TEMPLATES registry (v1).
+#
+# One entry per transferred P-touch template. Registering a new label is a
+# config edit here (after the P-touch Editor -> Transfer Manager loop), not a
+# code change.
+#
+# Fields:
+#   printer      — key into printers.yaml; the template's home printer.
+#   template_key — the Key Assign slot Transfer Manager gave this template
+#                  (the ^TS{nnn} selector).
+#   objects      — the template's variable object names, EXACT + case-
+#                  sensitive, in print order (named on the Expanded tab in
+#                  P-touch Editor). These are the field names POST /print
+#                  accepts for this template.
+#   placeholder  — per-template default printed for any field the caller
+#                  omits (each app owns its own empties — Argus M4). Unknown
+#                  field names are ALWAYS rejected 400 regardless.
+#   media        — what the template was designed for.
+#   owner_app    — which app owns/uses this template (documentation).
+#
+# ############################################################################
+# ##  TEMPLATE-KEY DRIFT WARNING (Argus M1) — READ BEFORE RE-TRANSFERRING  ##
+# ############################################################################
+# P-touch Transfer Manager ASSIGNS the Key Assign number at transfer time.
+# Re-transferring a template (even the same .lbx after an edit) CAN assign a
+# DIFFERENT key, or reuse this slot for another template. If that happens and
+# this file is not updated, the printer will print the WRONG label or —
+# QL-720NW documented behavior — silently eject NOTHING (the ESC i a 03
+# no-op failure mode). A live printer-side key verification is NOT feasible
+# over raw TCP 9100 (the protocol offers no "list stored templates" query),
+# so this registry is the single source of truth and keeping it correct is a
+# HARD operator step:
+#   after ANY re-transfer: (1) read the Key Assign number off Transfer
+#   Manager, (2) update `template_key` here, (3) print one test label.
+# The service logs template name + key on every print attempt so a drifted
+# key is diagnosable from the log.
+templates:
+  filament_spool:
+    printer: ql720nw
+    template_key: 99
+    objects:
+      - QR_URL0001
+      - TXT_BRAND0002
+      - TXT_MATERIAL0003
+      - TXT_COLOR0004
+      - TXT_LOCATION0005
+      - TXT_SPOOLID0006
+    placeholder: "None"   # matches the filament app's Brian-decided empty policy
+    media: "DK-2205 62mm continuous"
+    owner_app: filament-intake
