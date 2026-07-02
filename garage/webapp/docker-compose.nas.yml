@@ -1,0 +1,54 @@
+# ENR Garage Inventory — Container Manager Project, NAS deployment.
+#
+# TEMPLATE — DO NOT DEPLOY YET (deploy is an explicit operator step). Copy into
+# Container Manager > Project > "Create" (or paste as the project's
+# docker-compose.yml). Then replace REPLACE_WITH_BUSINESS_DB_PASSWORD with the
+# literal BUSINESS_DB_PASSWORD value from the analytics repo .env, and
+# REPLACE_WITH_TAILSCALE_HTTPS_ORIGIN with the real serving origin (below).
+#
+# Synology Container Manager gotchas applied (memory: synology-container-manager-gotchas):
+#   * Env values are INLINE LITERALS — CM does NOT interpolate ${VAR} from a .env.
+#   * Numeric env values are UNQUOTED (port *mappings* under ports: may be quoted).
+#   * postgres_default is declared EXTERNAL (it already exists; do not recreate it).
+#   * No bind mounts here, so there are no host dirs to pre-create.
+#   * Peers are reached by CONTAINER NAME + INTERNAL port, never host IP:published.
+#
+# GARAGE_QR_BASE — why it exists and what to set it to:
+#   Every bin label carries a QR encoding an ABSOLUTE URL to that item's page
+#   (scan -> edit -> reprint loop, Brian's 2026-07-02 decision). The QR must
+#   open wherever Brian's phone is, so it encodes the Tailscale-HTTPS origin
+#   this app is served behind (same posture as filament-intake), NOT localhost
+#   and NOT the bare LAN IP. Set it BEFORE printing any labels — QRs printed
+#   with a wrong base go stale on the physical bins.
+services:
+  garage-inventory:
+    container_name: garage-inventory
+    build:
+      context: .
+      dockerfile: garage/webapp/Dockerfile
+    restart: unless-stopped
+    ports:
+      - 8745:8000          # host:container — 8745 is free (Spoolman 7912, filament-intake 8743, label-service 8744 planned, dashboards 8788)
+    environment:
+      # Business Postgres peer — container name + INTERNAL port 5432
+      # (NOT 10.0.0.16:5433, which is the host-published port for Mac dev).
+      BUSINESS_DB_HOST: postgres16
+      BUSINESS_DB_PORT: 5432
+      BUSINESS_DB_NAME: business
+      BUSINESS_DB_USER: brian_admin
+      BUSINESS_DB_PASSWORD: REPLACE_WITH_BUSINESS_DB_PASSWORD
+      # Label Printing Service peer (parallel build; host port 8744 planned).
+      # From inside postgres_default use the CONTAINER NAME + internal port —
+      # confirm both against the label-service compose when it lands.
+      LABEL_SERVICE_URL: http://label-service:8000
+      # The garage-bin QL template's registered name — set after Brian designs
+      # + transfers it and it is added to the label service's templates YAML.
+      GARAGE_TEMPLATE: garage_bin
+      # Absolute origin baked into every printed QR — see header comment.
+      GARAGE_QR_BASE: https://REPLACE_WITH_TAILSCALE_HTTPS_ORIGIN
+    networks:
+      - postgres_default
+
+networks:
+  postgres_default:
+    external: true

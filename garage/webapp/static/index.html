@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>ENR Garage Inventory</title>
+  <style>
+    :root { --bg:#14110d; --card:#211c15; --ink:#f3ead9; --muted:#b6a888;
+            --accent:#c8a24a; --good:#5aa469; --line:#3a3023; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;
+           background:var(--bg); color:var(--ink); line-height:1.4;
+           padding:env(safe-area-inset-top) 0 2rem; }
+    header { padding:1rem 1.1rem .6rem; border-bottom:1px solid var(--line); }
+    header h1 { margin:0; font-size:1.2rem; letter-spacing:.02em; }
+    header p { margin:.2rem 0 0; color:var(--muted); font-size:.82rem; }
+    main { padding:1rem 1.1rem; max-width:560px; margin:0 auto; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+            padding:1rem; margin-bottom:1rem; }
+    label { display:block; font-size:.82rem; color:var(--muted); margin:.7rem 0 .25rem; }
+    input { width:100%; font-size:1.05rem; padding:.7rem .8rem; border-radius:10px;
+            border:1px solid var(--line); background:#1a1610; color:var(--ink); }
+    button { width:100%; font-size:1.05rem; font-weight:600; padding:.85rem;
+             border:none; border-radius:11px; background:var(--accent); color:#1a1408;
+             margin-top:1rem; cursor:pointer; }
+    button.secondary { background:transparent; color:var(--accent);
+                       border:1px solid var(--accent); }
+    button:disabled { opacity:.5; }
+    .tabs { display:flex; gap:.6rem; margin-bottom:1rem; }
+    .tabs button { margin-top:0; padding:.6rem; font-size:.95rem; }
+    .tabs button.inactive { background:transparent; color:var(--muted);
+                            border:1px solid var(--line); }
+    .hidden { display:none !important; }
+    .muted { color:var(--muted); font-size:.85rem; }
+    .err { color:#e08a7a; font-size:.88rem; margin-top:.6rem; min-height:1em; }
+    .ok-box { border:1px solid var(--good); }
+    .row { display:flex; gap:.7rem; }
+    .row > div { flex:1; }
+    h2 { font-size:1rem; margin:.1rem 0 .3rem; }
+    /* result cards */
+    a.hit { display:block; text-decoration:none; color:inherit;
+            background:var(--card); border:1px solid var(--line);
+            border-radius:12px; padding:.75rem .9rem; margin:.55rem 0; }
+    a.hit:active { border-color:var(--accent); }
+    .hit .code { font-weight:700; color:var(--accent); font-size:1.05rem;
+                 font-variant-numeric:tabular-nums; }
+    .hit .where { color:var(--muted); font-size:.82rem; }
+    .hit .lines { font-size:.92rem; margin-top:.25rem; white-space:pre-line; }
+    .pill { display:inline-block; font-size:.74rem; padding:.15rem .55rem;
+            border-radius:999px; background:#2c2517; color:var(--accent);
+            border:1px solid var(--line); }
+    .kv { font-size:.95rem; margin:.15rem 0; }
+    .kv b { color:var(--ink); }
+    .big-code { font-size:1.5rem; font-weight:700; color:var(--accent);
+                margin:.3rem 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ENR Garage Inventory</h1>
+    <p>Find a bin, or add a new one.</p>
+  </header>
+
+  <main>
+    <div class="tabs">
+      <button id="tabLookup" type="button">Lookup</button>
+      <button id="tabAdd" class="inactive" type="button">Add</button>
+    </div>
+
+    <!-- LOOKUP -->
+    <section id="lookupView">
+      <div class="card">
+        <label for="q">Where is&hellip;</label>
+        <input id="q" autocomplete="off" placeholder="e.g. wrenches, painters tape, GB38" />
+        <div class="muted" style="margin-top:.4rem;">Searches label lines and
+          media; a loc code like <b>GB38</b> works too.</div>
+      </div>
+      <div id="results"></div>
+      <div id="lookupErr" class="err"></div>
+    </section>
+
+    <!-- ADD -->
+    <section id="addView" class="hidden">
+      <div id="addForm" class="card">
+        <h2>New bin / item</h2>
+        <div class="row">
+          <div>
+            <label for="aRoom">Room *</label>
+            <input id="aRoom" placeholder="e.g. Garage" />
+          </div>
+          <div>
+            <label for="aLocation">Location *</label>
+            <input id="aLocation" placeholder="e.g. Ultra Cab 4" />
+          </div>
+        </div>
+        <label for="aLine1">Label line 1</label>
+        <input id="aLine1" placeholder="general description / brand" />
+        <label for="aLine2">Label line 2</label>
+        <input id="aLine2" placeholder="detailed contents" />
+        <div class="row">
+          <div>
+            <label for="aMedia">Media</label>
+            <input id="aMedia" />
+          </div>
+          <div>
+            <label for="aQty">Number</label>
+            <input id="aQty" inputmode="numeric" />
+          </div>
+        </div>
+        <button id="reviewBtn" type="button">Review before saving</button>
+        <div id="addErr" class="err"></div>
+      </div>
+
+      <!-- confirm-before-save (SOP) -->
+      <div id="confirmCard" class="card hidden">
+        <span class="pill">Confirm before saving</span>
+        <div class="big-code" id="cCode"></div>
+        <div class="kv"><b>Room:</b> <span id="cRoom"></span></div>
+        <div class="kv"><b>Location:</b> <span id="cLocation"></span></div>
+        <div class="kv"><b>Line 1:</b> <span id="cLine1"></span></div>
+        <div class="kv"><b>Line 2:</b> <span id="cLine2"></span></div>
+        <div class="kv"><b>Media:</b> <span id="cMedia"></span></div>
+        <div class="kv"><b>Number:</b> <span id="cQty"></span></div>
+        <div class="muted" id="cNote"></div>
+        <button id="confirmBtn" type="button">Confirm &amp; save</button>
+        <button id="backBtn" class="secondary" type="button">Back / edit</button>
+        <div id="confirmErr" class="err"></div>
+      </div>
+
+      <!-- saved -->
+      <div id="savedCard" class="card ok-box hidden">
+        <span class="pill">Saved</span>
+        <div class="big-code" id="sCode"></div>
+        <div class="kv" id="sWhere"></div>
+        <button id="sOpenBtn" type="button">Open item page (QR / print)</button>
+        <button id="sAnotherBtn" class="secondary" type="button">Add another</button>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => (s ?? "").toString()
+      .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+
+    // ---- tabs -----------------------------------------------------------
+    function showTab(which) {
+      $("lookupView").classList.toggle("hidden", which !== "lookup");
+      $("addView").classList.toggle("hidden", which !== "add");
+      $("tabLookup").classList.toggle("inactive", which !== "lookup");
+      $("tabAdd").classList.toggle("inactive", which !== "add");
+    }
+    $("tabLookup").onclick = () => showTab("lookup");
+    $("tabAdd").onclick = () => showTab("add");
+
+    // ---- lookup: search-as-you-type -------------------------------------
+    let timer = null, lastQ = "";
+    $("q").addEventListener("input", () => {
+      clearTimeout(timer);
+      timer = setTimeout(runSearch, 250);
+    });
+    async function runSearch() {
+      const q = $("q").value.trim();
+      $("lookupErr").textContent = "";
+      if (!q) { $("results").innerHTML = ""; return; }
+      if (q === lastQ) return;
+      lastQ = q;
+      try {
+        const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+        if (!r.ok) throw new Error((await r.json()).detail || r.status);
+        const data = await r.json();
+        if (data.q !== $("q").value.trim()) return; // stale response
+        $("results").innerHTML = data.results.length
+          ? data.results.map(hitCard).join("")
+          : `<div class="muted" style="padding:.5rem .2rem;">No matches for
+             &ldquo;${esc(q)}&rdquo; — try a shorter or looser word.</div>`;
+      } catch (e) {
+        $("lookupErr").textContent = "Search failed: " + e.message;
+      }
+    }
+    function hitCard(it) {
+      const lines = [it.label_line1, it.label_line2, it.media]
+        .filter(Boolean).map(esc).join("\n");
+      const retired = it.status !== "active"
+        ? ` <span class="pill">${esc(it.status)}</span>` : "";
+      return `<a class="hit" href="/item/${it.idx}">
+        <span class="code">${esc(it.loc_code)}</span>
+        <span class="where"> — ${esc(it.room ?? "?")} · ${esc(it.location ?? "—")}</span>${retired}
+        <div class="lines">${lines}</div></a>`;
+    }
+
+    // ---- add: form -> preview -> confirm -> saved ------------------------
+    function formBody() {
+      const qty = $("aQty").value.trim();
+      return {
+        room: $("aRoom").value.trim(),
+        location: $("aLocation").value.trim(),
+        label_line1: $("aLine1").value.trim() || null,
+        label_line2: $("aLine2").value.trim() || null,
+        media: $("aMedia").value.trim() || null,
+        qty: qty ? parseInt(qty, 10) : null,
+      };
+    }
+    $("reviewBtn").onclick = async () => {
+      $("addErr").textContent = "";
+      const b = formBody();
+      if (!b.room || !b.location) {
+        $("addErr").textContent = "Room and Location are required.";
+        return;
+      }
+      try {
+        const r = await fetch("/api/items/preview", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify(b) });
+        if (!r.ok) throw new Error((await r.json()).detail || r.status);
+        const p = await r.json();
+        $("cCode").textContent = p.loc_code_preview;
+        $("cRoom").textContent = p.room;
+        $("cLocation").textContent = p.location;
+        $("cLine1").textContent = p.label_line1 ?? "—";
+        $("cLine2").textContent = p.label_line2 ?? "—";
+        $("cMedia").textContent = p.media ?? "—";
+        $("cQty").textContent = p.qty ?? "—";
+        $("cNote").textContent = p.note;
+        $("addForm").classList.add("hidden");
+        $("confirmCard").classList.remove("hidden");
+      } catch (e) {
+        $("addErr").textContent = "Preview failed: " + e.message;
+      }
+    };
+    $("backBtn").onclick = () => {
+      $("confirmCard").classList.add("hidden");
+      $("addForm").classList.remove("hidden");
+    };
+    $("confirmBtn").onclick = async () => {
+      $("confirmErr").textContent = "";
+      $("confirmBtn").disabled = true;
+      try {
+        const r = await fetch("/api/items", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify(formBody()) });
+        if (!r.ok) throw new Error((await r.json()).detail || r.status);
+        const it = (await r.json()).item;
+        $("sCode").textContent = it.loc_code;
+        $("sWhere").textContent =
+          `${it.room} · ${it.location}` +
+          (it.label_line1 ? ` — ${it.label_line1}` : "");
+        $("sOpenBtn").onclick = () => location.href = `/item/${it.idx}`;
+        $("confirmCard").classList.add("hidden");
+        $("savedCard").classList.remove("hidden");
+      } catch (e) {
+        $("confirmErr").textContent = "Save failed: " + e.message;
+      } finally {
+        $("confirmBtn").disabled = false;
+      }
+    };
+    $("sAnotherBtn").onclick = () => {
+      for (const id of ["aLine1","aLine2","aMedia","aQty"]) $(id).value = "";
+      $("savedCard").classList.add("hidden");
+      $("addForm").classList.remove("hidden");
+    };
+  </script>
+</body>
+</html>

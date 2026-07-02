@@ -1,0 +1,14 @@
+# Build-context hygiene for the garage-inventory image. Context is the deploy
+# folder containing the garage/ package; keep cruft and secrets out of the image.
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.DS_Store
+**/.pytest_cache/
+# Never bake env/secrets into the image — config is injected at run time.
+.env
+**/.env
+*.env.bak*
+# Loader is a one-shot dev/ops tool (needs pandas + LibreOffice); not needed
+# in the image.
+garage/load_from_xls.py
