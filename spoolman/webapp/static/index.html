@@ -138,6 +138,16 @@
       <div id="successBody"></div>
       <button id="againBtn" type="button">Scan another</button>
     </section>
+
+    <!-- Always-available — reprint a label by spool id (lost/damaged labels) -->
+    <section id="reprintCard" class="card">
+      <h2>Reprint a label</h2>
+      <p class="muted">Lost or damaged label? Type the Spoolman spool id and reprint.</p>
+      <label for="reprintId">Spool id</label>
+      <input id="reprintId" inputmode="numeric" autocomplete="off" placeholder="e.g. 22" />
+      <button id="reprintBtn" type="button">Print label</button>
+      <div id="reprintStatus" class="err"></div>
+    </section>
   </main>
 
 <script>
@@ -297,6 +307,32 @@
     }
   }
 
+  // ---- print label ------------------------------------------------------ //
+  // POST a spool id to /api/print_label and report success/failure into a
+  // status element. Reused by both the per-spool success buttons and the
+  // "Reprint by spool id" control.
+  async function printLabel(spoolId, statusEl, btnEl) {
+    statusEl.textContent = "Printing…";
+    statusEl.style.color = "var(--muted)";
+    if (btnEl) { btnEl.disabled = true; }
+    try {
+      const r = await fetch("/api/print_label", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spool_id: spoolId })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.detail || ("HTTP " + r.status));
+      statusEl.textContent = "✓ " + (data.message || "Label sent.");
+      statusEl.style.color = "var(--good)";
+    } catch (e) {
+      statusEl.textContent = "✗ " + (e.message || e);
+      statusEl.style.color = "#e08a7a";
+    } finally {
+      if (btnEl) { btnEl.disabled = false; }
+    }
+  }
+
   function renderSuccess(d) {
     resetTo("done");
     const opt = d.path === "option2" ? "Option 2 (known)" : "Option 3 (new + bound)";
@@ -307,6 +343,17 @@
       html += "<div class='kv muted'>barcode bound — next scan will be a fast Option-2 hit.</div>";
     }
     $("successBody").innerHTML = html;
+    // One "Print label" button per created spool id (with an inline status line).
+    (d.spool_ids || []).forEach((sid) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = "Print label · spool " + sid;
+      const status = document.createElement("div");
+      status.className = "err";
+      btn.addEventListener("click", () => printLabel(sid, status, btn));
+      $("successBody").appendChild(btn);
+      $("successBody").appendChild(status);
+    });
     show(successCard);
     successCard.scrollIntoView({ behavior: "smooth", block: "center" });
   }
@@ -320,6 +367,19 @@
   });
   $("submitBtn").addEventListener("click", doIntake);
   $("cancelBtn").addEventListener("click", () => { resetTo("scan"); });
+  $("reprintBtn").addEventListener("click", () => {
+    const sid = parseInt($("reprintId").value, 10);
+    const status = $("reprintStatus");
+    if (!sid || sid < 1) {
+      status.textContent = "Enter a valid spool id.";
+      status.style.color = "#e08a7a";
+      return;
+    }
+    printLabel(sid, status, $("reprintBtn"));
+  });
+  $("reprintId").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); $("reprintBtn").click(); }
+  });
   $("againBtn").addEventListener("click", () => {
     $("manualBarcode").value = ""; currentBarcode = null; isKnown = false;
     $("kBarcode").textContent = ""; $("nBarcode").textContent = "";

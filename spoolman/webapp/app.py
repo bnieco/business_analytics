@@ -37,15 +37,18 @@ then open  http://127.0.0.1:8742/
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
+import requests
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from spoolman import connector as C
+from spoolman.webapp import ptouch
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -53,6 +56,12 @@ app = FastAPI(title="ENR Filament Intake", version="1.0.0")
 
 # A single shared client (thin requests.Session wrapper) for the process.
 _client = C.SpoolmanClient()
+
+# Label printer config — inline env, matching the docker-compose.nas.yml literals
+# (CM does not interpolate ${VAR}). Defaults are the hardware-validated values.
+PRINTER_IP = os.environ.get("PRINTER_IP", "10.0.0.200")
+PRINTER_PORT = int(os.environ.get("PRINTER_PORT", "9100"))
+PTOUCH_TEMPLATE_KEY = int(os.environ.get("PTOUCH_TEMPLATE_KEY", "99"))
 
 
 # --------------------------------------------------------------------------- #
@@ -83,6 +92,12 @@ class IntakeBody(BaseModel):
 
     # optional per-spool extras
     lot_nr: Optional[str] = None
+
+
+class PrintLabelBody(BaseModel):
+    """Print (or reprint) the QL-720NW label for one Spoolman spool id."""
+
+    spool_id: int = Field(..., ge=1)
 
 
 # --------------------------------------------------------------------------- #
@@ -187,6 +202,51 @@ def intake(body: IntakeBody) -> dict:
         "mapping_created": result.mapping_created,
         "vendor_created": result.vendor_created,
         "filament_created": result.filament_created,
+    }
+
+
+@app.post("/api/print_label")
+def print_label(body: PrintLabelBody) -> dict:
+    """Print the filament label for `spool_id` on the QL-720NW.
+
+    Fetches the spool from Spoolman, assembles the hardware-validated P-touch
+    Template byte stream (via `ptouch.print_spool_label`), and sends it over raw
+    TCP to the printer. Returns `{ok, message}` on success. If the printer is
+    unreachable, returns HTTP 502 with the reachability message; an unknown
+    spool id returns HTTP 404.
+
+    NOTE (Phase 3 open item): the proven test prints were sent from Brian's Mac.
+    The container -> 10.0.0.200:9100 path is exercised for the first time here;
+    if this 502s with a reachability message from inside the container, that is a
+    Docker-network-to-LAN routing issue to diagnose, not a code bug.
+    """
+    try:
+        ptouch.print_spool_label(
+            body.spool_id,
+            printer_ip=PRINTER_IP,
+            port=PRINTER_PORT,
+            template_key=PTOUCH_TEMPLATE_KEY,
+            client=_client,
+        )
+    except ptouch.PrinterUnreachable as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except requests.HTTPError as exc:
+        code = exc.response.status_code if exc.response is not None else 502
+        if code == 404:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Spool {body.spool_id} not found in Spoolman.",
+            )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Spoolman error fetching spool {body.spool_id}: {exc}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"print failed: {exc}")
+
+    return {
+        "ok": True,
+        "message": f"Label sent to printer for spool {body.spool_id}.",
     }
 
 

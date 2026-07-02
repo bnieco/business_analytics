@@ -30,6 +30,13 @@ services:
       BUSINESS_DB_NAME: business
       BUSINESS_DB_USER: brian_admin
       BUSINESS_DB_PASSWORD: REPLACE_WITH_BUSINESS_DB_PASSWORD
+      # Label printer (Phase 3) — Brother QL-720NW on the LAN, raw TCP 9100.
+      # Inline literals (CM does NOT interpolate ${VAR}); numeric key UNQUOTED.
+      # NOTE: the container -> 10.0.0.200:9100 path is unverified until the first
+      # phone print (Phase 3 open item); if labels don't print but /api/print_label
+      # returns a reachability 502, it's Docker-network-to-LAN routing, not code.
+      PRINTER_IP: 10.0.0.200
+      PTOUCH_TEMPLATE_KEY: 99
     networks:
       - postgres_default
 

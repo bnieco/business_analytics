@@ -276,6 +276,14 @@ class SpoolmanClient:
     def get_filament(self, filament_id: int) -> dict:
         return self._get(f"filament/{filament_id}")
 
+    # -- spool read (used by the label printer) ----------------------------- #
+    def get_spool(self, spool_id: int) -> dict:
+        """Return the full spool record (with embedded filament + vendor).
+
+        Raises `requests.HTTPError` (404) if the spool id does not resolve.
+        """
+        return self._get(f"spool/{spool_id}")
+
     def filament_exists(self, filament_id: int) -> bool:
         """Return True if `filament_id` still resolves in Spoolman, False on 404.
 
