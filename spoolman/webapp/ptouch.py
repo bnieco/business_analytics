@@ -1,34 +1,29 @@
-"""ENR Filament label-print module (Phase 3) — the single source of truth.
+"""ENR Filament label-print glue (Phase 3 / Label Service Phase S).
 
-This is the promoted, production version of the P-touch Template print logic that
-`test_print_label.py` validated on the Brother QL-720NW hardware on 2026-07-01.
-The command-builder and the Spoolman-record -> label-field mapping live HERE and
-nowhere else: both the FastAPI "Print label" endpoint (`webapp/app.py`) and the
-standalone CLI (`test_print_label.py`) import from this module, so the validated
-byte stream can never drift between two copies.
+WHAT THIS MODULE IS NOW (Phase S extraction, 2026-07-02)
+--------------------------------------------------------
+The generic print ENGINE — P-touch Template byte assembly, the raw TCP 9100
+transport, the command-grammar constants, and `PrinterUnreachable` — moved to
+the shared, app-agnostic `labels.engine` package (Label Printing Service v1).
+This module keeps everything FILAMENT: the Spoolman fetch, the record -> six-
+field mapping, the field_key <-> object_name pairing, and the one-call
+orchestration. Its PUBLIC API IS UNCHANGED — `app.py` and `test_print_label.py`
+import the same names and get byte-identical output (regression-verified
+against the pre-extraction stream for the live spools).
+
+The filament app deliberately calls the engine IN-PROCESS (the locked hybrid
+architecture, Argus B2): no HTTP hop, no dependency on the label-service
+container, zero regression to the shipped "Print label" button. Other apps use
+the `labels.service` HTTP API instead — same engine, two front doors.
 
 THE PRINT CHAIN (all four links must be healthy)
 ------------------------------------------------
-  Spoolman API (data) -> this module (P-touch Template command) ->
-  raw TCP 9100 (transport) -> QL-720NW with the "filament" template transferred
-  at Key Assign 99 (hardware).
+  Spoolman API (data) -> this module (field mapping) -> labels.engine
+  (P-touch Template command) -> raw TCP 9100 (transport) -> QL-720NW with the
+  "filament" template transferred at Key Assign 99 (hardware).
 
-P-TOUCH TEMPLATE COMMAND GRAMMAR (bytes)
-----------------------------------------
-  ESC i a 03       1B 69 61 03                switch to P-touch Template command
-                                              mode for this job — MUST be first;
-                                              without it the QL-720NW silently
-                                              no-ops over 9100 (confirmed on
-                                              hardware 2026-07-01)
-  ESC @            1B 40                      initialize
-  ^II              5E 49 49                   template-mode init
-  ^TS{nnn}         5E 54 53 + 3 ASCII digits  select template by key, ZERO-PADDED
-                                              (key 99 -> "099" -> 30 39 39)
-  per object:
-    ^ON{name}\x00  5E 4F 4E + name + 00       address object BY NAME (null-term)
-    ^DI{lo}{hi}{d} 5E 44 49 + len16LE + data  replace that object's data;
-                                              len = len(data).to_bytes(2,'little')
-  ^FF              5E 46 46                   feed + PRINT (the trigger)
+The full byte-grammar documentation lives in `labels/engine.py` (authoritative)
+and the Template Spec vault doc.
 
 DATA FETCH vs. QR TARGET (two different Spoolman URLs — do not conflate)
 -----------------------------------------------------------------------
@@ -44,10 +39,26 @@ address regardless of where the container talks to Spoolman.
 from __future__ import annotations
 
 import os
-import socket
 from typing import Optional
 
 from spoolman import connector as C
+
+from labels import engine as _engine
+
+# Re-exported engine names — the public API of this module is unchanged.
+# (test_print_label.py and app.py import these from HERE.)
+from labels.engine import (  # noqa: F401  (re-exports)
+    ESC_AT,
+    ESC_IA_TEMPLATE,
+    SOCKET_TIMEOUT,
+    TOK_DI,
+    TOK_FF,
+    TOK_II,
+    TOK_ON,
+    TOK_TS,
+    PrinterUnreachable,
+    send_to_printer,
+)
 
 # --------------------------------------------------------------------------- #
 # Constants (from the hardware-validated Template Spec — authoritative)
@@ -62,30 +73,16 @@ SPOOLMAN_QR_BASE = (
     + "/spool/show"
 )
 
-SOCKET_TIMEOUT = 5.0   # printer connect/send
-
 # Brian's decision (2026-07-01): for an empty field, print the literal string
 # "None" on the label — NOT a blank object and NOT the old "(?)" placeholder.
+# This is the FILAMENT app's empty-field policy; the shared engine has none
+# (each app owns its own empties — Argus M4).
 EMPTY = "None"
 
-# Per-job mode switch. `ESC i a 03` (1B 69 61 03) dynamically switches the
-# printer into P-touch Template command mode for THIS job. It MUST be the first
-# command in the stream, before ESC @. Without it the QL-720NW silently accepts
-# the bytes over raw TCP 9100 and prints nothing — no error, nothing ejected.
-# Confirmed on hardware 2026-07-01: adding this prefix is what turned the first
-# (silent no-op) attempt into a printed label.
-ESC_IA_TEMPLATE = b"\x1b\x69\x61\x03"
-
-# P-touch Template literal tokens (ASCII; '^' = 0x5E)
-ESC_AT = b"\x1b\x40"
-TOK_II = b"^II"
-TOK_TS = b"^TS"
-TOK_ON = b"^ON"
-TOK_DI = b"^DI"
-TOK_FF = b"^FF"
-
 # Template object names in print order. (field_key, object_name); field_key is
-# resolved by build_fields(). Names are exact + case-sensitive.
+# resolved by build_fields(). Names are exact + case-sensitive. This pairing is
+# the filament app's field_key <-> object_name map (the Argus M2 seam) — the
+# shared engine and the service registry deal in object names only.
 OBJECTS: list[tuple[str, str]] = [
     ("qr_url", "QR_URL0001"),
     ("brand", "TXT_BRAND0002"),
@@ -95,13 +92,12 @@ OBJECTS: list[tuple[str, str]] = [
     ("spool_id", "TXT_SPOOLID0006"),
 ]
 
-
-class PrinterUnreachable(RuntimeError):
-    """Raised when the printer cannot be reached over TCP (socket failure)."""
+# The ordered object-name list the engine consumes (derived, single source).
+OBJECT_NAMES: list[str] = [obj_name for _field_key, obj_name in OBJECTS]
 
 
 # --------------------------------------------------------------------------- #
-# Spoolman fetch + field mapping (SHARED — the only copy)
+# Spoolman fetch + field mapping (FILAMENT-SPECIFIC — the only copy)
 # --------------------------------------------------------------------------- #
 def fetch_spool(spool_id: int, client: Optional[C.SpoolmanClient] = None) -> dict:
     """GET the spool record (with embedded filament + vendor) from Spoolman.
@@ -176,58 +172,18 @@ def build_fields(spool: dict, spool_id: int) -> tuple[dict[str, str], list[str]]
 
 
 # --------------------------------------------------------------------------- #
-# P-touch Template byte assembly (SHARED — the only copy)
+# Byte assembly — thin wrapper over the shared engine (same signature, same bytes)
 # --------------------------------------------------------------------------- #
 def build_command(fields: dict[str, str], key: int) -> bytes:
-    """Assemble the exact P-touch Template byte string.
+    """Assemble the P-touch Template byte string for the filament label.
 
-    ESC i a 03  ESC @  ^II  ^TS{key:03d}  then per object  ^ON{name}\\x00
-    ^DI{len16LE}{data}  then ^FF. Objects are addressed by name and emitted in
-    OBJECTS order. The leading ESC i a 03 switches the printer into P-touch
-    Template command mode for the job — without it the printer no-ops silently
-    over 9100.
+    Same public signature and byte-identical output as the pre-extraction
+    version: `fields` is keyed by the filament field_keys (`qr_url`, `brand`,
+    ...); this wrapper translates them to the template's object names via
+    OBJECTS and delegates to the shared `labels.engine.build_command`.
     """
-    if not (0 <= key <= 999):
-        raise ValueError("template key must be a 3-digit value (0..999)")
-
-    out = bytearray()
-    out += ESC_IA_TEMPLATE  # first: switch to P-touch Template command mode
-    out += ESC_AT
-    out += TOK_II
-    out += TOK_TS + f"{key:03d}".encode("ascii")  # zero-padded 3 digits
-
-    for field_key, obj_name in OBJECTS:
-        data = fields[field_key].encode("utf-8")
-        out += TOK_ON + obj_name.encode("ascii") + b"\x00"
-        out += TOK_DI + len(data).to_bytes(2, "little") + data
-
-    out += TOK_FF
-    return bytes(out)
-
-
-# --------------------------------------------------------------------------- #
-# Transport
-# --------------------------------------------------------------------------- #
-def send_to_printer(cmd: bytes, ip: str, port: int, timeout: float = SOCKET_TIMEOUT) -> None:
-    """Open a raw TCP socket to the printer, send the command bytes, close.
-
-    Raises `PrinterUnreachable` with a short, operator-facing message on any
-    network problem so an unreachable printer reads as a transport issue rather
-    than a bare stack trace.
-    """
-    try:
-        with socket.create_connection((ip, port), timeout=timeout) as sock:
-            sock.settimeout(timeout)
-            sock.sendall(cmd)
-    except (socket.timeout, TimeoutError) as exc:
-        raise PrinterUnreachable(
-            f"could not reach printer at {ip}:{port}: timed out after {timeout:.0f}s "
-            f"(is it powered on and on the network?)"
-        ) from exc
-    except OSError as exc:
-        raise PrinterUnreachable(
-            f"could not reach printer at {ip}:{port}: {exc}"
-        ) from exc
+    by_object_name = {obj_name: fields[field_key] for field_key, obj_name in OBJECTS}
+    return _engine.build_command(by_object_name, key, OBJECT_NAMES)
 
 
 # --------------------------------------------------------------------------- #

@@ -24,6 +24,12 @@ WORKDIR /app
 COPY spoolman/webapp/requirements-app.txt /app/requirements-app.txt
 RUN pip install --no-cache-dir -r /app/requirements-app.txt
 
+# The shared label engine (Label Service Phase S): ptouch.py imports
+# `labels.engine` in-process, so the package must ship in this image too.
+# NOTE for the NAS deploy folder: copy BOTH spoolman/ AND labels/ into
+# /volume1/docker/filament-intake/ before the next rebuild.
+COPY labels/ /app/labels/
+
 # The whole spoolman package: connector (Stage A) + webapp + static page (Stage B).
 COPY spoolman/ /app/spoolman/
 
