@@ -28,6 +28,39 @@ P-TOUCH TEMPLATE COMMAND GRAMMAR (bytes) — the validated contract
                                               len = len(data).to_bytes(2,'little')
   ^FF              5E 46 46                   feed + PRINT (the trigger)
 
+MULTI-LINE OBJECT DATA (values containing a newline)
+----------------------------------------------------
+  ^DI is a byte-length "directly insert object" command: per the Brother
+  P-touch Template Command Reference (QL-720NW, docp000732, p.49) it inserts
+  exactly its len bytes into the selected object and — crucially — "Even if a
+  print command or delimiter is within the specified number of characters,
+  they are treated as data." So a line-feed byte (0A/0D/0D0A) OR the literal
+  token "^CR" placed INSIDE ^DI is never interpreted — the line-feed bytes are
+  read-then-discarded (ref p.20, 4.6.2) and "^CR" prints literally. ^DI can
+  therefore only ever produce a SINGLE line, which is why every raw-byte and
+  inside-^DI-^CR attempt printed one line.
+
+  The line feed inside a text object is the ^CR CONTROL COMMAND (5E 43 52),
+  which the reference documents (p.46) as "Line feed in object ... Adds a line
+  feed to the next line in the text object. Valid even if the text string for
+  the line feed command has been changed" — i.e. unconditionally valid,
+  independent of the printer's Line Feed Code setting. Brother's own worked
+  example is `1 ^CR 2 ^CR 3 ^FF` (31 5E4352 32 5E4352 33 5E4646) -> three
+  printed lines. The line segments are streamed as RAW data (no ^DI wrapper)
+  with ^CR commands between them; raw data runs until the next command token
+  (the next object's ^ON, or the final ^FF) closes it.
+
+  So for a value that contains a newline this engine emits, for that object:
+    ^ON{name}\x00  {line1_utf8}  ^CR  {line2_utf8}  ^CR  ...  {lineN_utf8}
+  with NO ^DI. Single-line values keep the ^ON + ^DI path and are byte-
+  identical to before (regression-guarded in the test suite).
+
+  KNOWN LIMIT (multi-line only): raw-stream data has no byte-length guard, so a
+  literal '^' (0x5E) or the configured delimiter inside a multi-line value
+  could be mis-parsed as a command. Single-line values are unaffected (^DI is
+  length-prefixed and binary-safe). Garage-bin label lines are short human
+  text where this is not expected; documented here for the caller's awareness.
+
 DIALECTS (v1 = ptouch-template ONLY)
 ------------------------------------
 This engine implements the `ptouch-template` dialect (QL-720NW). The printer
@@ -58,6 +91,22 @@ TOK_TS = b"^TS"
 TOK_ON = b"^ON"
 TOK_DI = b"^DI"
 TOK_FF = b"^FF"
+# ^CR (5E 43 52) — the P-touch Template "line feed in object" CONTROL command.
+# It is a line feed ONLY when emitted as a standalone command between raw data
+# segments; placed inside ^DI data it is treated as literal bytes (^DI inserts
+# its len bytes verbatim). See the MULTI-LINE section in the module docstring.
+TOK_CR = b"^CR"
+
+
+def _split_lines(value: str) -> list[str]:
+    """Split a field value into line segments on \\r\\n, \\r, or \\n.
+
+    Normalizes the three newline conventions to a single split so a value that
+    reaches us as "AAA\\r\\nBBB" and one that reaches us as "AAA\\nBBB" both
+    produce ["AAA", "BBB"]. A value with no newline returns a single-element
+    list (and stays on the byte-identical single-line ^DI path).
+    """
+    return value.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 
 
 class PrinterUnreachable(RuntimeError):
@@ -113,9 +162,21 @@ def build_command(
     out += TOK_TS + f"{key:03d}".encode("ascii")  # zero-padded 3 digits
 
     for obj_name in objects:
-        data = fields[obj_name].encode("utf-8")  # KeyError if missing — by design
+        value = fields[obj_name]  # KeyError if missing — by design
         out += TOK_ON + obj_name.encode("ascii") + b"\x00"
-        out += TOK_DI + len(data).to_bytes(2, "little") + data
+        if "\n" in value or "\r" in value:
+            # MULTI-LINE: stream raw line segments joined by the ^CR line-feed
+            # COMMAND, with NO ^DI. ^DI would swallow ^CR as literal data and
+            # advance the object pointer (that is why the interleaved
+            # ^DI/^CR/^DI attempt scattered lines 2..n into the FOLLOWING
+            # objects and left only line 1 here). See the module docstring.
+            segments = [line.encode("utf-8") for line in _split_lines(value)]
+            out += TOK_CR.join(segments)
+        else:
+            # SINGLE-LINE: unchanged, byte-identical to the pre-multiline
+            # engine (the filament path's regression gate depends on this).
+            data = value.encode("utf-8")
+            out += TOK_DI + len(data).to_bytes(2, "little") + data
 
     out += TOK_FF
     return bytes(out)

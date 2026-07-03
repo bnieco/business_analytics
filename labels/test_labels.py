@@ -118,6 +118,64 @@ def test_engine_utf8_length_is_bytes_not_chars():
     assert b"^DI" + (8).to_bytes(2, "little") in cmd
 
 
+def test_engine_multiline_object_uses_cr_not_di():
+    """A value with a newline is emitted for that object as raw line segments
+    joined by the ^CR line-feed COMMAND (5E 43 52), with NO ^DI wrapper.
+    Single-line objects in the SAME command keep the ^ON + ^DI path and stay
+    byte-identical to the pre-multiline engine (the regression gate).
+
+    Byte-level / dry-run ONLY — nothing is sent to a printer.
+    """
+    objects = ("TXT_LINE1", "TXT_LINE2")
+    fields = {"TXT_LINE1": "Garage", "TXT_LINE2": "AAA\nBBB\nCCC"}
+    cmd = engine.build_command(fields, 98, objects)
+
+    # Frame is unchanged.
+    assert cmd.startswith(b"\x1b\x69\x61\x03\x1b\x40^II^TS098")
+    assert cmd.endswith(b"^FF")
+
+    # Object 1 (single line) is the EXACT old ^ON + ^DI grammar, byte-for-byte.
+    line1 = "Garage".encode()
+    seg1 = b"^ONTXT_LINE1\x00" + b"^DI" + len(line1).to_bytes(2, "little") + line1
+    assert seg1 in cmd
+
+    # Object 2 (multi-line): ^ON + raw "AAA" ^CR "BBB" ^CR "CCC", and NO ^DI
+    # anywhere in that object's segment.
+    seg2 = b"^ONTXT_LINE2\x00" + b"AAA" + b"^CR" + b"BBB" + b"^CR" + b"CCC"
+    assert seg2 in cmd
+    # The whole command, assembled by hand, matches exactly.
+    expected = (b"\x1b\x69\x61\x03\x1b\x40^II^TS098" + seg1 + seg2 + b"^FF")
+    assert cmd == expected, (cmd, expected)
+    # And the multi-line object carries no ^DI byte-count insert.
+    assert cmd.count(b"^DI") == 1, "multi-line object must not emit ^DI"
+    assert cmd.count(b"^CR") == 2, "two line feeds for a three-line value"
+
+
+def test_engine_singleline_is_byte_identical_after_multiline_feature():
+    """PROOF that adding the multi-line path did not regress single-line output:
+    the full filament vector still assembles byte-for-byte to the frozen spec."""
+    fields = {
+        "QR_URL0001": "http://10.0.0.16:7912/spool/show/22",
+        "TXT_BRAND0002": "Bambu Lab",
+        "TXT_MATERIAL0003": "PLA Galaxy",
+        "TXT_COLOR0004": "Purple",
+        "TXT_LOCATION0005": "Cart",
+        "TXT_SPOOLID0006": "Spool #22",
+    }
+    cmd = engine.build_command(fields, 99, FILAMENT_OBJECTS)
+    assert cmd == _hand_assembled(fields, 99)
+    assert b"^CR" not in cmd, "no ^CR should appear for all-single-line values"
+
+
+def test_engine_multiline_normalizes_crlf_and_cr():
+    """\\r\\n and \\r are normalized to the same segmentation as \\n."""
+    a = engine.build_command({"A": "X\r\nY"}, 1, ("A",))
+    b = engine.build_command({"A": "X\rY"}, 1, ("A",))
+    c = engine.build_command({"A": "X\nY"}, 1, ("A",))
+    assert a == b == c
+    assert b"^ONA\x00X^CRY" in c
+
+
 def test_engine_validation():
     try:
         engine.build_command({"A": "x"}, 1, ())
