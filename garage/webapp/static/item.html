@@ -19,8 +19,10 @@
     .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
             padding:1rem; margin-bottom:1rem; }
     label { display:block; font-size:.82rem; color:var(--muted); margin:.7rem 0 .25rem; }
-    input { width:100%; font-size:1.05rem; padding:.7rem .8rem; border-radius:10px;
-            border:1px solid var(--line); background:#1a1610; color:var(--ink); }
+    input, textarea { width:100%; font-size:1.05rem; padding:.7rem .8rem;
+            border-radius:10px; border:1px solid var(--line); background:#1a1610;
+            color:var(--ink); }
+    textarea { font-family:inherit; line-height:1.4; resize:vertical; min-height:2.6rem; }
     button { width:100%; font-size:1.05rem; font-weight:600; padding:.85rem;
              border:none; border-radius:11px; background:var(--accent); color:#1a1408;
              margin-top:1rem; cursor:pointer; }
@@ -78,8 +80,8 @@
         <div><label for="eRoom">Room</label><input id="eRoom" /></div>
         <div><label for="eLocation">Location</label><input id="eLocation" /></div>
       </div>
-      <label for="eLine1">Label line 1</label><input id="eLine1" />
-      <label for="eLine2">Label line 2</label><input id="eLine2" />
+      <label for="eLine1">Label line 1</label><textarea id="eLine1" rows="2"></textarea>
+      <label for="eLine2">Label line 2</label><textarea id="eLine2" rows="4"></textarea>
       <div class="row">
         <div><label for="eMedia">Media</label><input id="eMedia" /></div>
         <div><label for="eQty">Number</label><input id="eQty" inputmode="numeric" /></div>
