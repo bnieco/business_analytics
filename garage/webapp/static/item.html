@@ -49,6 +49,43 @@
     .qr { background:#14110d; border:1px solid var(--line); border-radius:12px;
           padding: .6rem; width:180px; height:180px; margin:.5rem auto; display:block; }
     .lines { white-space:pre-line; }
+    /* ancestor breadcrumb (root -> ... -> current) */
+    .crumbs { font-size:.85rem; color:var(--muted); margin:0 0 .8rem;
+              display:flex; flex-wrap:wrap; align-items:center; gap:.15rem .35rem; }
+    .crumbs a { color:var(--accent); text-decoration:none; }
+    .crumbs .sep { color:var(--muted); }
+    .crumbs .cur { color:var(--ink); font-weight:600; }
+    /* "Contains" child rows (mirrors index.html's result cards) */
+    a.hit { display:block; text-decoration:none; color:inherit;
+            background:var(--card); border:1px solid var(--line);
+            border-radius:12px; padding:.75rem .9rem; margin:.55rem 0; }
+    a.hit:active { border-color:var(--accent); }
+    .hit .code { font-weight:700; color:var(--accent); font-size:1.05rem;
+                 font-variant-numeric:tabular-nums; }
+    .hit .where { color:var(--muted); font-size:.82rem; }
+    .hit .lines { font-size:.92rem; margin-top:.25rem; white-space:pre-line; }
+    .childrow { display:flex; align-items:stretch; gap:.5rem; margin:.55rem 0; }
+    .childrow a.hit { flex:1; margin:0; }
+    .childrow .rmchild { width:auto; margin:0; padding:.4rem .7rem; font-size:.8rem;
+                         align-self:center; }
+    /* custom combobox (replaces native <datalist>, which iOS Safari won't
+       render a tappable dropdown for) */
+    .combo { position:relative; }
+    .combo-list { position:absolute; top:calc(100% + 4px); left:0; right:0;
+                  z-index:50; max-height:40vh; overflow:auto;
+                  background:var(--card); border:1px solid var(--line);
+                  border-radius:10px; box-shadow:0 6px 20px rgba(0,0,0,.45);
+                  -webkit-overflow-scrolling:touch; }
+    .combo-item { min-height:44px; display:flex; flex-direction:column;
+                  justify-content:center; padding:.5rem .8rem; font-size:1.02rem;
+                  color:var(--ink); border-bottom:1px solid var(--line);
+                  cursor:pointer; }
+    .combo-item:last-child { border-bottom:none; }
+    .combo-item:active, .combo-item.active { background:var(--accent);
+                  color:#1a1408; }
+    .combo-item .note { font-size:.78rem; color:var(--muted); }
+    .combo-item:active .note, .combo-item.active .note { color:#1a1408; }
+    .combo-empty { padding:.6rem .8rem; color:var(--muted); font-size:.9rem; }
   </style>
 </head>
 <body>
@@ -58,6 +95,7 @@
   </header>
 
   <main>
+    <nav id="breadcrumb" class="crumbs hidden" aria-label="Location path"></nav>
     <div id="loadErr" class="err"></div>
 
     <!-- VIEW -->
@@ -71,6 +109,62 @@
       <div class="kv"><b>Number</b><span id="vQty"></span></div>
       <div id="vDrift" class="warnbox hidden"></div>
       <button id="editBtn" class="secondary" type="button">Edit</button>
+    </section>
+
+    <!-- CONTAINS (direct children + add sub-item) -->
+    <section id="childrenCard" class="card hidden">
+      <span class="pill">Contains</span> <span class="muted" id="childCount"></span>
+      <div id="childList"></div>
+
+      <!-- inline new-sub-item form (confirm-before-save, like the index Add tab) -->
+      <div id="newChildPanel" class="hidden">
+        <div class="row">
+          <div><label for="nRoom">Room *</label><input id="nRoom" autocomplete="off" /></div>
+          <div><label for="nLocation">Location *</label><input id="nLocation" autocomplete="off" /></div>
+        </div>
+        <label for="nLine1">Label line 1</label>
+        <textarea id="nLine1" rows="2"></textarea>
+        <label for="nLine2">Label line 2</label>
+        <textarea id="nLine2" rows="4"></textarea>
+        <div class="row">
+          <div><label for="nMedia">Media</label><input id="nMedia" /></div>
+          <div><label for="nQty">Number</label><input id="nQty" inputmode="numeric" /></div>
+        </div>
+        <button id="nReviewBtn" type="button">Review before saving</button>
+        <button id="nCancelBtn" class="secondary" type="button">Cancel</button>
+        <div id="nAddErr" class="err"></div>
+
+        <!-- confirm-before-save (SOP) -->
+        <div id="nConfirmCard" class="card hidden" style="margin-top:1rem;">
+          <span class="pill">Confirm before saving</span>
+          <div class="big-code" id="ncCode"></div>
+          <div class="kv"><b>Inside</b><span id="ncParent"></span></div>
+          <div class="kv"><b>Room · Location</b><span id="ncWhere"></span></div>
+          <div class="kv"><b>Label line 1</b><span id="ncLine1" class="lines"></span></div>
+          <div class="kv"><b>Label line 2</b><span id="ncLine2" class="lines"></span></div>
+          <div class="kv"><b>Media</b><span id="ncMedia"></span></div>
+          <div class="kv"><b>Number</b><span id="ncQty"></span></div>
+          <div class="muted" id="ncNote"></div>
+          <button id="nConfirmBtn" type="button">Confirm &amp; save</button>
+          <button id="nBackBtn" class="secondary" type="button">Back / edit</button>
+          <div id="nConfirmErr" class="err"></div>
+        </div>
+      </div>
+
+      <!-- inline link-existing-item picker (iOS-safe custom combobox) -->
+      <div id="linkChildPanel" class="hidden">
+        <label for="linkSearch">Search for an item to place inside this one</label>
+        <div class="combo" id="linkCombo">
+          <input id="linkSearch" autocomplete="off"
+                 placeholder="e.g. wrenches, painters tape, GB38" />
+          <div class="combo-list hidden"></div>
+        </div>
+        <button id="linkCancelBtn" class="secondary" type="button">Cancel</button>
+      </div>
+
+      <button id="addChildBtn" class="secondary" type="button">New sub-item</button>
+      <button id="linkChildBtn" class="secondary" type="button">Link existing item</button>
+      <div id="childErr" class="err"></div>
     </section>
 
     <!-- EDIT -->
@@ -105,8 +199,52 @@
 
   <script>
     const $ = (id) => document.getElementById(id);
+    const esc = (s) => (s ?? "").toString()
+      .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
     const idx = parseInt(location.pathname.split("/").pop(), 10);
     let item = null;
+
+    // ---- render ----------------------------------------------------------
+    function renderBreadcrumb() {
+      const bc = $("breadcrumb");
+      const anc = item.ancestors || [];
+      if (anc.length) {
+        const crumbName = (a) => esc(a.loc_code) +
+          (a.label_line1 ? ` — ${esc(a.label_line1)}` : "");
+        const links = anc.map((a) =>
+          `<a href="/item/${a.idx}">${crumbName(a)}</a>`);
+        const cur = `<span class="cur">${esc(item.loc_code)}</span>`;
+        bc.innerHTML = [...links, cur].join(`<span class="sep">&rsaquo;</span>`);
+        bc.classList.remove("hidden");
+      } else {
+        bc.innerHTML = "";           // root item: no breadcrumb
+        bc.classList.add("hidden");
+      }
+    }
+
+    function childCard(c) {
+      const lines = [c.label_line1, c.label_line2].filter(Boolean)
+        .map(esc).join("\n");
+      const retired = c.status !== "active"
+        ? ` <span class="pill">${esc(c.status)}</span>` : "";
+      return `<div class="childrow">
+        <a class="hit" href="/item/${c.idx}">
+          <span class="code">${esc(c.loc_code)}</span>${retired}
+          <div class="lines">${lines}</div>
+        </a>
+        <button class="rmchild danger" type="button"
+                data-idx="${c.idx}" data-code="${esc(c.loc_code)}">Remove</button>
+      </div>`;
+    }
+
+    function renderChildren() {
+      const kids = item.children || [];
+      $("childCount").textContent = kids.length
+        ? `${kids.length} item${kids.length === 1 ? "" : "s"}`
+        : "nothing yet";
+      $("childList").innerHTML = kids.map(childCard).join("");
+      $("childrenCard").classList.remove("hidden");
+    }
 
     function render() {
       document.title = `ENR Garage — ${item.loc_code}`;
@@ -131,6 +269,8 @@
       }
       $("qrImg").src = `/api/item/${idx}/qr.svg`;
       $("qrUrl").textContent = item.qr_url;
+      renderBreadcrumb();
+      renderChildren();
       $("viewCard").classList.remove("hidden");
       $("labelCard").classList.remove("hidden");
     }
@@ -201,6 +341,207 @@
         $("editErr").textContent = "Retire failed: " + e.message;
       }
     };
+
+    // ---- parent/child helpers -------------------------------------------
+    // PUT the parent of ANY item (self or a child) then reload this page.
+    async function setParent(targetIdx, parentIdx) {
+      const r = await fetch(`/api/item/${targetIdx}/parent`, {
+        method:"PUT", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ parent_idx: parentIdx }) });
+      if (!r.ok) throw new Error((await r.json()).detail || r.status);
+      return (await r.json()).item;
+    }
+
+    // Remove (detach) a child. Delegated once on the stable #childList node,
+    // so it survives every render() re-render of the list.
+    $("childList").addEventListener("click", async (e) => {
+      const btn = e.target.closest(".rmchild");
+      if (!btn) return;
+      e.preventDefault();
+      const cIdx = parseInt(btn.getAttribute("data-idx"), 10);
+      const cCode = btn.getAttribute("data-code");
+      if (!confirm(`Remove ${cCode} from this item? The item itself is kept.`))
+        return;
+      $("childErr").textContent = "";
+      try {
+        await setParent(cIdx, null);
+        await load();
+      } catch (err) {
+        $("childErr").textContent = "Remove failed: " + err.message;
+      }
+    });
+
+    // ---- add sub-item (new item nested under this one) -------------------
+    function showChildPanel(which) {
+      $("newChildPanel").classList.toggle("hidden", which !== "new");
+      $("linkChildPanel").classList.toggle("hidden", which !== "link");
+      $("addChildBtn").classList.toggle("hidden", which !== null);
+      $("linkChildBtn").classList.toggle("hidden", which !== null);
+    }
+    $("addChildBtn").onclick = () => {
+      $("nAddErr").textContent = "";
+      $("nConfirmErr").textContent = "";
+      $("nConfirmCard").classList.add("hidden");
+      // Prefill Room/Location from THIS item (prefill-only, freely editable).
+      $("nRoom").value = item.room ?? "";
+      $("nLocation").value = item.location ?? "";
+      for (const id of ["nLine1","nLine2","nMedia","nQty"]) $(id).value = "";
+      showChildPanel("new");
+    };
+    $("nCancelBtn").onclick = () => { showChildPanel(null); };
+    $("nBackBtn").onclick = () => { $("nConfirmCard").classList.add("hidden"); };
+
+    function childFormBody() {
+      const qty = $("nQty").value.trim();
+      return {
+        room: $("nRoom").value.trim(),
+        location: $("nLocation").value.trim(),
+        label_line1: $("nLine1").value.trim() || null,
+        label_line2: $("nLine2").value.trim() || null,
+        media: $("nMedia").value.trim() || null,
+        qty: qty ? parseInt(qty, 10) : null,
+        parent_idx: idx,
+      };
+    }
+    $("nReviewBtn").onclick = async () => {
+      $("nAddErr").textContent = "";
+      const b = childFormBody();
+      if (!b.room || !b.location) {
+        $("nAddErr").textContent = "Room and Location are required.";
+        return;
+      }
+      try {
+        const r = await fetch("/api/items/preview", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify(b) });
+        if (!r.ok) throw new Error((await r.json()).detail || r.status);
+        const p = await r.json();
+        $("ncCode").textContent = p.loc_code_preview;
+        $("ncParent").textContent = p.parent
+          ? `${p.parent.loc_code}` +
+            (p.parent.label_line1 ? ` — ${p.parent.label_line1}` : "")
+          : "—";
+        $("ncWhere").textContent = `${p.room} · ${p.location}`;
+        $("ncLine1").textContent = p.label_line1 ?? "—";
+        $("ncLine2").textContent = p.label_line2 ?? "—";
+        $("ncMedia").textContent = p.media ?? "—";
+        $("ncQty").textContent = p.qty ?? "—";
+        $("ncNote").textContent = p.note;
+        $("nConfirmCard").classList.remove("hidden");
+      } catch (e) {
+        $("nAddErr").textContent = "Preview failed: " + e.message;
+      }
+    };
+    $("nConfirmBtn").onclick = async () => {
+      $("nConfirmErr").textContent = "";
+      $("nConfirmBtn").disabled = true;
+      try {
+        const r = await fetch("/api/items", {
+          method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify(childFormBody()) });
+        if (!r.ok) throw new Error((await r.json()).detail || r.status);
+        showChildPanel(null);
+        await load();
+      } catch (e) {
+        $("nConfirmErr").textContent = "Save failed: " + e.message;
+      } finally {
+        $("nConfirmBtn").disabled = false;
+      }
+    };
+
+    // ---- link existing item (iOS-safe async combobox) -------------------
+    (function setupLinkPicker() {
+      const input = $("linkSearch");
+      const list = input.parentElement.querySelector(".combo-list");
+      let timer = null;
+
+      function close() { list.classList.add("hidden"); }
+      function open() { list.classList.remove("hidden"); }
+
+      async function runSearch() {
+        const q = input.value.trim();
+        if (!q) { list.innerHTML = ""; close(); return; }
+        try {
+          const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+          if (!r.ok) throw new Error((await r.json()).detail || r.status);
+          const data = await r.json();
+          if (data.q !== input.value.trim()) return;   // stale response
+          // Exclude this item itself and its existing direct children.
+          const excluded = new Set([idx,
+            ...(item.children || []).map((c) => c.idx)]);
+          const hits = data.results.filter((h) => !excluded.has(h.idx));
+          if (!hits.length) {
+            list.innerHTML =
+              `<div class="combo-empty">No other items match &ldquo;${esc(q)}&rdquo;.</div>`;
+            open();
+            return;
+          }
+          list.innerHTML = hits.map((h) => {
+            const name = esc(h.loc_code) +
+              (h.label_line1 ? ` — ${esc(h.label_line1)}` : "");
+            const notes = [];
+            if (h.parent_idx) notes.push("inside another item");
+            if (h.status !== "active") notes.push(esc(h.status));
+            const note = notes.length
+              ? `<span class="note">${notes.join(" · ")}</span>` : "";
+            return `<div class="combo-item" data-idx="${h.idx}"
+                         data-code="${esc(h.loc_code)}"
+                         data-hasparent="${h.parent_idx ? 1 : 0}">
+                      <span>${name}</span>${note}
+                    </div>`;
+          }).join("");
+          open();
+        } catch (e) {
+          $("childErr").textContent = "Search failed: " + e.message;
+        }
+      }
+
+      input.addEventListener("input", () => {
+        clearTimeout(timer);
+        timer = setTimeout(runSearch, 250);
+      });
+      input.addEventListener("focus", () => { if (input.value.trim()) open(); });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") { close(); input.blur(); }
+      });
+      // Blur closes the list, but a tap must register FIRST — the pick handler
+      // below cancels blur via preventDefault on mousedown/touchstart.
+      input.addEventListener("blur", () => { setTimeout(close, 120); });
+
+      async function pick(e) {
+        const el = e.target.closest(".combo-item");
+        if (!el) return;
+        e.preventDefault();
+        const pIdx = parseInt(el.getAttribute("data-idx"), 10);
+        const pCode = el.getAttribute("data-code");
+        const hasParent = el.getAttribute("data-hasparent") === "1";
+        if (hasParent &&
+            !confirm(`${pCode} is currently inside another item. Move it here?`))
+          return;
+        $("childErr").textContent = "";
+        try {
+          await setParent(pIdx, idx);
+          input.value = "";
+          list.innerHTML = "";
+          close();
+          showChildPanel(null);
+          await load();
+        } catch (err) {
+          $("childErr").textContent = err.message;   // surface cycle 400 verbatim
+        }
+      }
+      list.addEventListener("mousedown", pick);
+      list.addEventListener("touchstart", pick, { passive: false });
+    })();
+
+    $("linkChildBtn").onclick = () => {
+      $("childErr").textContent = "";
+      $("linkSearch").value = "";
+      $("linkCombo").querySelector(".combo-list").innerHTML = "";
+      showChildPanel("link");
+      $("linkSearch").focus();
+    };
+    $("linkCancelBtn").onclick = () => { showChildPanel(null); };
 
     // ---- print -----------------------------------------------------------
     $("printBtn").onclick = async () => {
