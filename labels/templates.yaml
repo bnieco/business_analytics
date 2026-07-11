@@ -48,3 +48,56 @@ templates:
     placeholder: "None"   # matches the filament app's Brian-decided empty policy
     media: "DK-2205 62mm continuous"
     owner_app: filament-intake
+  garage_bin:
+    printer: ql720nw
+    template_key: 98        # Key Assign from Brian's ORDERED re-transfer, 2026-07-04
+    # ORDERED-FILL multi-line template (Edison 2026-07-04, LIVE). The six object
+    # names carry a 4-digit suffix that ENCODES the fill order the ordered stream
+    # relies on (QR first so its cell never neighbours a ^CR — see fill_mode below).
+    # The garage app maps these to item values by name-substring; the numbered
+    # names still contain those substrings (LABELLINE2 is a substring of
+    # TXT_LABELLINE20003, ROOM of TXT_ROOM0004, ...), so the mapping resolves.
+    objects:                # EXACT numbered names off the Expanded tab, in fill order
+      - QR_URL0001          # -> item URL (GARAGE_QR_BASE + /item/{idx}); verbatim single cell
+      - TXT_LABELLINE10002  # -> label_line1
+      - TXT_LABELLINE20003  # -> label_line2   (MULTI-LINE — declared in multiline_fields)
+      - TXT_ROOM0004        # -> room
+      - TXT_LOCATION0005    # -> location
+      - TXT_LOCCODE0006     # -> loc_code
+    fill_mode: ordered      # ordered-fill data path: ^SS delimiter-pin + Tab-delimited
+                            # positional cells + ^CR line feeds. filament_spool omits
+                            # fill_mode and stays on the default 'named' (^ON/^DI) path.
+    multiline_fields:       # ONLY these objects are ^CR line-split; every OTHER cell
+      - TXT_LABELLINE20003  # (incl. the QR) is verbatim and fails closed on a newline.
+    placeholder: "None"     # moot in practice: the garage client always sends every field (blank -> "") so none is ever "missing"
+    media: "QL-720NW DK roll (confirm size)"   # informational; the transferred template carries its own media
+    owner_app: garage-inventory
+    # ####################################################################
+    # ##  MULTI-LINE TXT_LABELLINE2 — ordered-fill path (Edison 2026-07-04, WIRED)
+    # ####################################################################
+    # WHY the ordered path: the NAMED (^ON/^DI) path is SINGLE-LINE only —
+    # docp000732 p.49 (^DI bytes are opaque; a newline prints as literal data).
+    # CONFIRMED DEAD on hardware 2026-07-03/04: every ^DI variant printed ONE line.
+    # ORDERED FILL is the doc-supported multi-line path: positional data, Tab-
+    # delimited, ^CR line-feed within the object (p.46/p.54), with an explicit ^SS
+    # delimiter-pin (p.31) leading the stream so the job is self-contained
+    # (5E 53 53 30 31 09 = ^SS len-1 Tab; the device's saved "Data Delimiter" no
+    # longer matters, so no on-device "confirm delimiter = Tab" step is needed).
+    #
+    # HARDWARE-PROVEN 2026-07-04: labels/confirm_ordered_print.py --send printed a
+    # 3-line TXT_LABELLINE20003 stacked correctly with neighbours intact on key 98
+    # (102-byte ordered stream). This LIVE entry now carries the numbered objects +
+    # fill_mode + multiline_fields, and registry.py + service/app.py read them, so
+    # the garage app's print button drives the SAME ordered stream through the
+    # service. Only TXT_LABELLINE20003 is ^CR-split; QR_URL0001 and the other four
+    # are verbatim single cells (a newline in any of them fails closed — protects
+    # the QR/barcode cell, docp000732 §4.2 p.16: a line feed in/around barcode data
+    # voids it).
+    #
+    # DRIFT NOTE (Argus M1): re-transferring the ordered template can reassign the
+    # Key Assign OR renumber/reorder the objects. After ANY re-transfer, update
+    # BOTH `template_key` AND the `objects` list (exact numbered names, fill order)
+    # here, keep TXT_LABELLINE20003 in `multiline_fields`, and reprint one test
+    # label. TXT_LABELLINE20003 must also stay a multi-line "Text Layout" object in
+    # P-touch Editor (Automatic Length / a tall-enough Fixed Frame) — a layout
+    # precondition independent of the data path.

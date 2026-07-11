@@ -68,6 +68,17 @@ class Template:
     placeholder: str = DEFAULT_PLACEHOLDER
     media: str = ""
     owner_app: str = ""
+    # Data path the engine uses to assemble this template's stream:
+    #   "named"   — ^ON/^DI per object (single-line; the proven filament path).
+    #   "ordered" — ordered-fill (^SS pin + Tab delimiter + ^CR line feeds), the
+    #               doc-supported MULTI-LINE path. Requires the template's objects
+    #               to be NUMBERED in fill order. Default "named" so every existing
+    #               template and caller is unaffected.
+    fill_mode: str = "named"
+    # (ordered mode only) object names that MAY carry a multi-line value — these
+    # and ONLY these are ^CR-split; a newline in any other cell fails closed.
+    # Ignored by the engine in named mode. Default empty.
+    multiline_fields: tuple[str, ...] = ()
     _extra: dict = field(default_factory=dict, compare=False)
 
     def as_dict(self) -> dict:
@@ -79,6 +90,8 @@ class Template:
             "placeholder": self.placeholder,
             "media": self.media,
             "owner_app": self.owner_app,
+            "fill_mode": self.fill_mode,
+            "multiline_fields": list(self.multiline_fields),
         }
 
 
@@ -160,6 +173,26 @@ class Registry:
                 raise RegistryError(f"{ctx}: objects must be a non-empty list of names")
             if len(set(objects)) != len(objects):
                 raise RegistryError(f"{ctx}: duplicate object names in objects")
+            # fill_mode: default "named" so existing templates are unchanged.
+            fill_mode = str(cfg.get("fill_mode", "named"))
+            if fill_mode not in ("named", "ordered"):
+                raise RegistryError(
+                    f"{ctx}: fill_mode must be 'named' or 'ordered', got "
+                    f"{fill_mode!r}"
+                )
+            # multiline_fields: default empty; every name must be one of objects.
+            multiline_raw = cfg.get("multiline_fields") or []
+            if not isinstance(multiline_raw, list) or not all(
+                isinstance(o, str) and o for o in multiline_raw
+            ):
+                raise RegistryError(
+                    f"{ctx}: multiline_fields must be a list of object names"
+                )
+            ml_unknown = sorted(set(multiline_raw) - set(objects))
+            if ml_unknown:
+                raise RegistryError(
+                    f"{ctx}: multiline_fields names not in objects: {ml_unknown}"
+                )
             templates[name] = Template(
                 name=name,
                 printer=printer_name,
@@ -168,6 +201,8 @@ class Registry:
                 placeholder=str(cfg.get("placeholder", DEFAULT_PLACEHOLDER)),
                 media=str(cfg.get("media", "")),
                 owner_app=str(cfg.get("owner_app", "")),
+                fill_mode=fill_mode,
+                multiline_fields=tuple(multiline_raw),
             )
 
         if not printers:

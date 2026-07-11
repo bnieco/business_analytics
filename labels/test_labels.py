@@ -118,37 +118,208 @@ def test_engine_utf8_length_is_bytes_not_chars():
     assert b"^DI" + (8).to_bytes(2, "little") in cmd
 
 
-def test_engine_multiline_object_uses_cr_not_di():
-    """A value with a newline is emitted for that object as raw line segments
-    joined by the ^CR line-feed COMMAND (5E 43 52), with NO ^DI wrapper.
-    Single-line objects in the SAME command keep the ^ON + ^DI path and stay
-    byte-identical to the pre-multiline engine (the regression gate).
-
-    Byte-level / dry-run ONLY — nothing is sent to a printer.
-    """
-    objects = ("TXT_LINE1", "TXT_LINE2")
-    fields = {"TXT_LINE1": "Garage", "TXT_LINE2": "AAA\nBBB\nCCC"}
-    cmd = engine.build_command(fields, 98, objects)
-
-    # Frame is unchanged.
-    assert cmd.startswith(b"\x1b\x69\x61\x03\x1b\x40^II^TS098")
-    assert cmd.endswith(b"^FF")
-
-    # Object 1 (single line) is the EXACT old ^ON + ^DI grammar, byte-for-byte.
-    line1 = "Garage".encode()
-    seg1 = b"^ONTXT_LINE1\x00" + b"^DI" + len(line1).to_bytes(2, "little") + line1
-    assert seg1 in cmd
-
-    # Object 2 (multi-line): ^ON + raw "AAA" ^CR "BBB" ^CR "CCC", and NO ^DI
-    # anywhere in that object's segment.
-    seg2 = b"^ONTXT_LINE2\x00" + b"AAA" + b"^CR" + b"BBB" + b"^CR" + b"CCC"
-    assert seg2 in cmd
-    # The whole command, assembled by hand, matches exactly.
-    expected = (b"\x1b\x69\x61\x03\x1b\x40^II^TS098" + seg1 + seg2 + b"^FF")
+def test_engine_named_newline_degrades_to_single_di_line():
+    """CORRECTED (2026-07-04): on the NAMED path a newline value is inserted
+    VERBATIM by ^DI (docp000732 p.49 — ^DI bytes are opaque, prints one line).
+    The removed hybrid raw-^CR-after-^ON branch must NOT reappear: no ^CR on
+    the named path, ever. Byte-level / dry-run ONLY — nothing is sent."""
+    data = "X\nY".encode("utf-8")
+    cmd = engine.build_command({"A": "X\nY"}, 1, ("A",))
+    expected = (b"\x1b\x69\x61\x03\x1b\x40^II^TS001"
+                + b"^ONA\x00^DI" + len(data).to_bytes(2, "little") + data
+                + b"^FF")
     assert cmd == expected, (cmd, expected)
-    # And the multi-line object carries no ^DI byte-count insert.
-    assert cmd.count(b"^DI") == 1, "multi-line object must not emit ^DI"
+    assert b"^CR" not in cmd, "named path must never emit the ^CR line-feed command"
+
+
+def test_engine_ordered_multiline_exact_bytes():
+    """ORDERED-FILL path (the doc-supported multi-line recipe, docp000732
+    p.46/p.54): stream LEADS with the ^SS delimiter-pin (5E 53 53 30 31 09),
+    then no ^ON, no ^DI; fields emitted positionally in `objects` order, joined
+    by the Tab (09h) delimiter. ONLY the DESIGNATED multiline field's segments
+    are joined by the ^CR line-feed command; other fields are verbatim cells.
+    Byte-for-byte. Dry-run ONLY."""
+    objects = ("QR_URL", "TXT_LINE1", "TXT_LINE2", "TXT_ROOM")
+    fields = {"QR_URL": "http://x/1", "TXT_LINE1": "Garage",
+              "TXT_LINE2": "AAA\nBBB\nCCC", "TXT_ROOM": "Attic"}
+    cmd = engine.build_command(fields, 98, objects, mode="ordered",
+                               multiline_fields=frozenset({"TXT_LINE2"}))
+    expected = (
+        b"\x1b\x69\x61\x03\x1b\x40^II^TS098"
+        + b"^SS" + b"01" + b"\x09"                 # delimiter-pin: len 1, Tab
+        + b"http://x/1" + b"\x09"
+        + b"Garage" + b"\x09"
+        + b"AAA" + b"^CR" + b"BBB" + b"^CR" + b"CCC" + b"\x09"
+        + b"Attic"
+        + b"^FF"
+    )
+    assert cmd == expected, (cmd, expected)
+    assert b"^ON" not in cmd and b"^DI" not in cmd, "ordered fill uses neither"
     assert cmd.count(b"^CR") == 2, "two line feeds for a three-line value"
+    # 3 delimiter-separators between 4 objects + the 1 Tab inside the ^SS pin.
+    assert cmd.count(b"\x09") == 4
+    # The ^SS pin leads the data, right after ^TS098.
+    assert b"^TS098^SS01\x09" in cmd
+
+
+def test_engine_ordered_empty_field_emits_single_space():
+    """EMPTY-CELL BLANKING (hardware bug, 2026-07-05): on the ordered path an
+    empty OR whitespace-only cell is emitted as a single space (0x20), NOT an
+    empty cell, so its template object prints BLANK instead of its baked-in
+    default text (the P-touch Template 'no data -> original text' behavior).
+    Byte-for-byte. Dry-run ONLY."""
+    objects = ("A", "B", "C")
+    frame = b"\x1b\x69\x61\x03\x1b\x40^II^TS001" + engine.DELIM_PIN
+    # Empty middle cell -> single 0x20 between the two Tabs (not an empty cell).
+    cmd = engine.build_command({"A": "x", "B": "", "C": "y"}, 1, objects,
+                               mode="ordered")
+    expected = frame + b"x" + b"\x09" + b"\x20" + b"\x09" + b"y" + b"^FF"
+    assert cmd == expected, (cmd, expected)
+    # The blanked cell is exactly one space (would be zero bytes without the fix).
+    assert b"x\x09\x20\x09y" in cmd
+    # Whitespace-only value blanks identically to empty.
+    cmd_ws = engine.build_command({"A": "x", "B": "   ", "C": "y"}, 1, objects,
+                                  mode="ordered")
+    assert cmd_ws == expected, (cmd_ws, expected)
+
+
+def test_engine_ordered_empty_multiline_field_is_single_space():
+    """An empty (or whitespace-only) DESIGNATED multiline field becomes ONE
+    blank line = a single space, NOT an empty ^CR split, with the neighboring
+    cells intact. This is the exact TXT_LABELLINE2 'no line 2' case Brian hit on
+    hardware. Byte-for-byte. Dry-run ONLY."""
+    objects = ("QR_URL", "TXT_LINE1", "TXT_LINE2", "TXT_ROOM")
+    ml = frozenset({"TXT_LINE2"})
+    frame = b"\x1b\x69\x61\x03\x1b\x40^II^TS098" + engine.DELIM_PIN
+    for empty in ("", "   "):
+        cmd = engine.build_command(
+            {"QR_URL": "http://x/1", "TXT_LINE1": "Garage",
+             "TXT_LINE2": empty, "TXT_ROOM": "Attic"},
+            98, objects, mode="ordered", multiline_fields=ml)
+        expected = (frame + b"http://x/1" + b"\x09" + b"Garage" + b"\x09"
+                    + b"\x20" + b"\x09" + b"Attic" + b"^FF")
+        assert cmd == expected, (empty, cmd, expected)
+        # The empty multiline cell is a single space, and produces NO line feed.
+        assert b"Garage\x09\x20\x09Attic" in cmd
+        assert b"^CR" not in cmd, "empty multiline value must not emit a ^CR"
+        # Neighbors untouched.
+        assert b"http://x/1" in cmd and b"Attic" in cmd
+    # Sanity: a NON-empty multiline value still ^CR-splits as before.
+    cmd2 = engine.build_command(
+        {"QR_URL": "http://x/1", "TXT_LINE1": "Garage",
+         "TXT_LINE2": "AAA\nBBB", "TXT_ROOM": "Attic"},
+        98, objects, mode="ordered", multiline_fields=ml)
+    assert b"Garage\x09AAA^CRBBB\x09Attic" in cmd2
+
+
+def test_engine_named_empty_field_not_blanked():
+    """The NAMED path is UNTOUCHED by empty-cell blanking: an empty value stays a
+    zero-length ^DI (^DI 00 00), NOT a space. This locks the filament regression
+    gate — the space substitution lives ONLY in the ordered branch."""
+    cmd = engine.build_command({"A": ""}, 1, ("A",))
+    expected = (b"\x1b\x69\x61\x03\x1b\x40^II^TS001"
+                + b"^ONA\x00^DI\x00\x00"        # zero-length data, no space
+                + b"^FF")
+    assert cmd == expected, (cmd, expected)
+    assert b"^DI\x00\x00" in cmd, "named empty field must be a zero-length ^DI"
+
+
+def test_engine_ordered_ss_pin_leads_and_pins_tab():
+    """The ordered stream is self-contained: it begins (after ^TS) with the ^SS
+    delimiter-pin exactly = 5E 53 53 30 31 09 (docp000732 p.31, '^SS n1 n2 data',
+    length 1, data = Tab). Verified against the doc's worked '^SS01,' example."""
+    assert engine.DELIM_PIN == b"\x5e\x53\x53\x30\x31\x09"
+    cmd = engine.build_command({"A": "x"}, 5, ("A",), mode="ordered")
+    assert cmd == (b"\x1b\x69\x61\x03\x1b\x40^II^TS005"
+                   + b"\x5e\x53\x53\x30\x31\x09" + b"x" + b"^FF")
+
+
+def test_engine_ordered_only_designated_field_gets_cr():
+    """A newline is line-split into ^CR ONLY for a designated multiline field;
+    an undesignated field with a newline fails closed (never reaches ^CR)."""
+    objs = ("QR_URL", "TXT_LINE2")
+    # TXT_LINE2 designated -> ^CR; QR_URL verbatim, no ^CR anywhere near it.
+    cmd = engine.build_command({"QR_URL": "http://x/1", "TXT_LINE2": "a\nb"},
+                               98, objs, mode="ordered",
+                               multiline_fields=frozenset({"TXT_LINE2"}))
+    assert b"http://x/1\x09a^CRb^FF" in cmd
+    # The QR/barcode cell must never contain a ^CR.
+    qr_cell = cmd.split(b"^SS01\x09", 1)[1].split(b"\x09", 1)[0]
+    assert b"^CR" not in qr_cell, "barcode/QR cell must never carry a line feed"
+
+
+def test_engine_ordered_newline_in_nondesignated_field_fails_closed():
+    """MAJOR-1 fail-closed: a newline in a NON-designated ordered field raises
+    UnsafeFieldValue — it must not silently pass into the barcode/QR cell
+    (docp000732 §4.2 p.16: a line feed in/around barcode data voids it)."""
+    objs = ("QR_URL", "TXT_LINE2")
+    # Newline in QR_URL (not designated) -> reject, even though TXT_LINE2 is
+    # the declared multiline field.
+    for bad in ({"QR_URL": "http://x/1\nEVIL", "TXT_LINE2": "ok"},   # \n in QR
+                {"QR_URL": "http://x/1\rEVIL", "TXT_LINE2": "ok"}):  # \r in QR
+        try:
+            engine.build_command(bad, 98, objs, mode="ordered",
+                                 multiline_fields=frozenset({"TXT_LINE2"}))
+            raise AssertionError(f"expected UnsafeFieldValue for {bad}")
+        except engine.UnsafeFieldValue:
+            pass
+    # With NO multiline_fields declared, ANY newline is rejected.
+    try:
+        engine.build_command({"QR_URL": "a", "TXT_LINE2": "a\nb"}, 98, objs,
+                             mode="ordered")
+        raise AssertionError("newline with no designated field should raise")
+    except engine.UnsafeFieldValue:
+        pass
+
+
+def test_engine_ordered_multiline_fields_must_be_declared():
+    """A multiline_fields name not in `objects` is an UnknownField (typo trap)."""
+    try:
+        engine.build_command({"A": "x"}, 1, ("A",), mode="ordered",
+                             multiline_fields=frozenset({"NOPE"}))
+        raise AssertionError("undeclared multiline field should raise")
+    except engine.UnknownField:
+        pass
+
+
+def test_engine_ordered_normalizes_crlf_and_cr():
+    """\\r\\n, \\r and \\n segment identically on the ordered path (-> ^CR) for a
+    DESIGNATED multiline field."""
+    ml = frozenset({"A"})
+    a = engine.build_command({"A": "X\r\nY"}, 1, ("A",), mode="ordered", multiline_fields=ml)
+    b = engine.build_command({"A": "X\rY"}, 1, ("A",), mode="ordered", multiline_fields=ml)
+    c = engine.build_command({"A": "X\nY"}, 1, ("A",), mode="ordered", multiline_fields=ml)
+    assert a == b == c
+    assert b"^TS001^SS01\x09X^CRY^FF" in c
+
+
+def test_engine_ordered_guard_fail_closed():
+    """The ordered path guards EVERY field fail-closed: a literal '^' (0x5E) or
+    Tab (0x09) in ANY field raises UnsafeFieldValue, even when a DIFFERENT field
+    is the multi-line one (so a stray '^'/Tab can't slip through a sibling of the
+    multi-line field). A newline is allowed ONLY in a designated field."""
+    objs = ("A", "B")
+    ml = frozenset({"A"})
+    for bad in ({"A": "ok", "B": "2^3"},            # '^' in a plain field
+                {"A": "a\tb", "B": "ok"},            # Tab in a plain field
+                {"A": "l1\nl2", "B": "safe^bad"}):   # '^' in sibling of multi-line
+        try:
+            engine.build_command(bad, 1, objs, mode="ordered", multiline_fields=ml)
+            raise AssertionError(f"expected UnsafeFieldValue for {bad}")
+        except engine.UnsafeFieldValue:
+            pass
+    # Newline in the DESIGNATED field is permitted and becomes ^CR.
+    cmd = engine.build_command({"A": "l1\nl2", "B": "ok"}, 1, objs,
+                               mode="ordered", multiline_fields=ml)
+    assert b"l1^CRl2\x09ok^FF" in cmd
+
+
+def test_engine_bad_mode_rejected():
+    try:
+        engine.build_command({"A": "x"}, 1, ("A",), mode="hybrid")
+        raise AssertionError("unknown mode should raise ValueError")
+    except ValueError:
+        pass
 
 
 def test_engine_singleline_is_byte_identical_after_multiline_feature():
@@ -165,15 +336,6 @@ def test_engine_singleline_is_byte_identical_after_multiline_feature():
     cmd = engine.build_command(fields, 99, FILAMENT_OBJECTS)
     assert cmd == _hand_assembled(fields, 99)
     assert b"^CR" not in cmd, "no ^CR should appear for all-single-line values"
-
-
-def test_engine_multiline_normalizes_crlf_and_cr():
-    """\\r\\n and \\r are normalized to the same segmentation as \\n."""
-    a = engine.build_command({"A": "X\r\nY"}, 1, ("A",))
-    b = engine.build_command({"A": "X\rY"}, 1, ("A",))
-    c = engine.build_command({"A": "X\nY"}, 1, ("A",))
-    assert a == b == c
-    assert b"^ONA\x00X^CRY" in c
 
 
 def test_engine_validation():
@@ -405,6 +567,171 @@ def test_service_unreachable_maps_to_502():
                                         "fields": FULL_FIELDS})
         assert r.status_code == 502
         assert "could not reach printer" in r.json()["detail"]
+
+
+# --------------------------------------------------------------------------- #
+# GARAGE ordered-fill wiring (registry + service + garage client)
+# --------------------------------------------------------------------------- #
+# The exact 102-byte ordered stream the confirming print sent on the QL-720NW
+# (key 98) on 2026-07-04 — the hardware-proven multi-line garage label. The
+# wired service path (registry-resolved garage_bin) must reproduce this exactly.
+PROVEN_GARAGE_ORDERED_HEX = (
+    "1b6961031b405e49495e54533039385e5353303109687474703a2f2f31302e302e302e"
+    "31363a383734352f6974656d2f393939094c494e45312d4f4b094141415e4352424242"
+    "5e435243434309524f4f4d2d4f4b094c4f432d4f4b09434f44452d4f4b5e4646"
+)
+
+GARAGE_OBJECTS = (
+    "QR_URL0001", "TXT_LABELLINE10002", "TXT_LABELLINE20003",
+    "TXT_ROOM0004", "TXT_LOCATION0005", "TXT_LOCCODE0006",
+)
+
+
+def test_registry_garage_bin_ordered_config():
+    """garage_bin loads as the ordered-fill template (key 98, numbered objects,
+    TXT_LABELLINE20003 multiline); filament_spool stays on the 'named' default."""
+    reg = Registry.load()
+    t = reg.template("garage_bin")
+    assert t is not None and t.template_key == 98
+    assert t.objects == GARAGE_OBJECTS
+    assert t.fill_mode == "ordered"
+    assert t.multiline_fields == ("TXT_LABELLINE20003",)
+    # Filament is untouched: default named path, no multiline field.
+    f = reg.template("filament_spool")
+    assert f.fill_mode == "named" and f.multiline_fields == ()
+
+
+def test_service_garage_bin_reproduces_confirming_print():
+    """END-TO-END PROOF: garage_bin fields POSTed to the service assemble to the
+    EXACT 102-byte ordered stream the confirming print used on hardware — i.e.
+    the wired service path == the proven direct-script path. Transport MOCKED."""
+    from labels import confirm_ordered_print as C
+
+    client, _ = _client()
+    sent = []
+    with patch("labels.engine.send_to_printer",
+               side_effect=lambda cmd, ip, port, timeout=5.0: sent.append(cmd)):
+        r = client.post("/print", json={"template": "garage_bin",
+                                        "fields": C.FIELDS})
+        assert r.status_code == 200, r.text
+        assert r.json()["template_key"] == 98 and r.json()["defaulted_fields"] == []
+        assert len(sent) == 1
+    cmd = sent[0]
+    # (a) byte-identical to the direct-script ordered stream, and
+    # (b) byte-identical to the frozen 102-byte proven hex.
+    assert cmd == engine.build_command(
+        C.FIELDS, C.KEY, C.OBJECTS, mode="ordered",
+        multiline_fields=C.MULTILINE_FIELDS)
+    assert cmd == bytes.fromhex(PROVEN_GARAGE_ORDERED_HEX)
+    assert len(cmd) == 102
+    # Ordered markers present, named markers absent, two ^CR line feeds (3 lines).
+    assert b"^TS098^SS01\x09" in cmd
+    assert b"^ON" not in cmd and b"^DI" not in cmd
+    assert cmd.count(b"^CR") == 2
+
+
+def test_service_filament_routes_named_not_ordered():
+    """Regression guard alongside the byte-equality gate: filament assembles on
+    the NAMED path — ^ON/^DI present, and NONE of the ordered-only markers
+    (^SS pin / ^CR) appear."""
+    client, _ = _client()
+    sent = []
+    with patch("labels.engine.send_to_printer",
+               side_effect=lambda cmd, ip, port, timeout=5.0: sent.append(cmd)):
+        r = client.post("/print", json={"template": "filament_spool",
+                                        "fields": FULL_FIELDS})
+        assert r.status_code == 200
+    cmd = sent[0]
+    assert cmd == _hand_assembled(FULL_FIELDS, 99)  # byte-identical, named path
+    assert b"^ON" in cmd and b"^DI" in cmd
+    assert engine.DELIM_PIN not in cmd and b"^CR" not in cmd
+
+
+def test_service_garage_bin_unsafe_field_is_clean_400():
+    """A garage field carrying an ordered-path unsafe byte ('^', Tab, or a
+    newline in a NON-multiline cell) is a clean 400 with a readable message —
+    NOT a 500 — and transport is never touched."""
+    from labels import confirm_ordered_print as C
+
+    client, _ = _client()
+    with patch("labels.engine.send_to_printer") as mock_send:
+        for bad_fields in (
+            dict(C.FIELDS, TXT_LABELLINE10002="LINE1^BAD"),   # '^' in Line 1
+            dict(C.FIELDS, TXT_ROOM0004="A\tB"),              # Tab in Room
+            dict(C.FIELDS, TXT_LOCCODE0006="GS\n644"),        # \n in a non-ML cell
+        ):
+            r = client.post("/print", json={"template": "garage_bin",
+                                            "fields": bad_fields})
+            assert r.status_code == 400, r.text
+            assert "unsafe" in r.json()["detail"].lower()
+        # Multi-line \n in the DESIGNATED field is fine (200).
+        ok = dict(C.FIELDS, TXT_LABELLINE20003="one\ntwo\nthree")
+        r = client.post("/print", json={"template": "garage_bin", "fields": ok})
+        assert r.status_code == 200, r.text
+        assert mock_send.call_count == 1  # only the good one printed
+
+
+# --------------------------------------------------------------------------- #
+# GARAGE CLIENT (garage.webapp.labels) — field mapping + clean value validation
+# --------------------------------------------------------------------------- #
+def _fake_garage_template() -> dict:
+    return {"name": "garage_bin", "template_key": 98,
+            "fields": list(GARAGE_OBJECTS), "fill_mode": "ordered",
+            "multiline_fields": ["TXT_LABELLINE20003"]}
+
+
+def test_garage_client_maps_numbered_names_and_flows_multiline():
+    """The garage client's name-substring mapping still resolves the NUMBERED
+    object names, and a multi-line label_line2 (with \\n) flows through to
+    TXT_LABELLINE20003. POST is mocked — no socket, no real service."""
+    from garage.webapp import labels as glabels
+
+    item = {"label_line1": "Paint & brushes", "label_line2": "row A\nrow B",
+            "room": "Garage", "location": "Shelf 3", "loc_code": "GS644"}
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+        content = b"{}"
+
+        def raise_for_status(self):  # noqa: D401
+            return None
+
+        def json(self):
+            return {"ok": True}
+
+    def fake_post(url, json, timeout):
+        captured["json"] = json
+        return _Resp()
+
+    with patch.object(glabels, "_get_templates", return_value=[_fake_garage_template()]), \
+            patch("garage.webapp.labels.requests.post", side_effect=fake_post):
+        glabels.print_item_label(item, "http://10.0.0.16:8745/item/644")
+
+    f = captured["json"]["fields"]
+    assert f["QR_URL0001"] == "http://10.0.0.16:8745/item/644"
+    assert f["TXT_LABELLINE10002"] == "Paint & brushes"
+    assert f["TXT_LABELLINE20003"] == "row A\nrow B"   # multiline preserved
+    assert f["TXT_ROOM0004"] == "Garage"
+    assert f["TXT_LOCATION0005"] == "Shelf 3"
+    assert f["TXT_LOCCODE0006"] == "GS644"
+
+
+def test_garage_client_rejects_unsafe_value_with_clean_error():
+    """An unsafe byte ('^') in a garage field raises FieldValueError (clean,
+    field-named) BEFORE any POST — the app layer maps it to a 400, not a 500."""
+    from garage.webapp import labels as glabels
+
+    item = {"label_line1": "Bins", "label_line2": "ok",
+            "room": "Garage", "location": "Shelf^3", "loc_code": "GS644"}
+    with patch.object(glabels, "_get_templates", return_value=[_fake_garage_template()]), \
+            patch("garage.webapp.labels.requests.post") as mock_post:
+        try:
+            glabels.print_item_label(item, "http://x/item/644")
+            raise AssertionError("expected FieldValueError")
+        except glabels.FieldValueError as exc:
+            assert "Location" in str(exc) and "^" in str(exc)
+        assert mock_post.call_count == 0  # rejected before the POST
 
 
 # --------------------------------------------------------------------------- #

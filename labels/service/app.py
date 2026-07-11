@@ -194,7 +194,20 @@ def print_label(body: PrintBody) -> dict:
         )
 
     # -- assemble ------------------------------------------------------------ #
-    cmd = engine.build_command(fields, template.template_key, template.objects)
+    # Drive the engine on this template's registered data path: filament stays
+    # on the default "named" (^ON/^DI, byte-identical) path; garage_bin is
+    # "ordered" with TXT_LABELLINE20003 as its multi-line field. The ordered
+    # path guards every field fail-closed, so a '^'/Tab (or a newline in a
+    # non-multiline cell) raises UnsafeFieldValue — surface it as a clean 400,
+    # not a 500. UnknownField from a mis-declared multiline_fields is 400 too.
+    try:
+        cmd = engine.build_command(
+            fields, template.template_key, template.objects,
+            mode=template.fill_mode,
+            multiline_fields=frozenset(template.multiline_fields),
+        )
+    except (engine.UnsafeFieldValue, engine.UnknownField) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     # -- send (serialized per printer; Argus M3) ------------------------------ #
     # Log line carries template name + key so on-printer key drift after a
