@@ -124,6 +124,15 @@ class ParentBody(BaseModel):
     parent_idx: Optional[int] = Field(None, ge=1)
 
 
+class BulkParentBody(BaseModel):
+    """Bulk associate / re-parent / detach: move many items under ONE parent
+    (or detach many). `idxs` = the items to move; `parent_idx` = their new
+    parent (null = detach to top level)."""
+
+    idxs: list[int] = Field(..., min_length=1)
+    parent_idx: Optional[int] = Field(None, ge=1)
+
+
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
@@ -536,6 +545,84 @@ def set_parent(idx: int, body: ParentBody) -> dict:
     finally:
         conn.close()
     return {"ok": True, "item": _row_out(row)}
+
+
+@app.put("/api/items/parent")
+def set_parent_bulk(body: BulkParentBody) -> dict:
+    """Assign many items to ONE parent in a single action (or detach many).
+
+    Built for the browse view's multi-select flow ("filter a location, select
+    all, put them under that location's parent"). Best-effort within one
+    transaction: everything that CAN be assigned is; items that can't — the
+    target parent itself, an ancestor of it (would loop), or a nonexistent
+    idx — are SKIPPED and reported, never fatal. parent_idx null = detach all.
+    Same cycle/self-parent rules as the single-item PUT, plus the DB trigger
+    as the authoritative backstop.
+    """
+    idxs = list(dict.fromkeys(body.idxs))          # de-dupe, preserve order
+    new_parent = body.parent_idx
+    assigned: list[int] = []
+    skipped: list[dict] = []
+    conn = db.connect()
+    try:
+        with conn:  # rollback on any raise, incl. HTTPException
+            with db.dict_cursor(conn) as cur:
+                forbidden: set[int] = set()
+                if new_parent is not None:
+                    cur.execute(f"SELECT idx FROM {db.TABLE} WHERE idx = %s",
+                                (new_parent,))
+                    if cur.fetchone() is None:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"No item with idx {new_parent} to use as "
+                                   f"parent.")
+                    # The parent + all its ancestors: nesting any of these
+                    # UNDER the parent would self-parent or loop.
+                    cur.execute(
+                        f"""
+                        WITH RECURSIVE anc AS (
+                            SELECT g.idx, g.parent_idx, 0 AS depth
+                            FROM {db.TABLE} g WHERE g.idx = %s
+                            UNION ALL
+                            SELECT g.idx, g.parent_idx, anc.depth + 1
+                            FROM {db.TABLE} g
+                            JOIN anc ON g.idx = anc.parent_idx
+                            WHERE anc.depth < 100
+                        )
+                        SELECT idx FROM anc
+                        """, (new_parent,))
+                    forbidden = {r["idx"] for r in cur.fetchall()}
+
+                cur.execute(f"SELECT idx FROM {db.TABLE} WHERE idx = ANY(%s)",
+                            (idxs,))
+                existing = {r["idx"] for r in cur.fetchall()}
+
+                for i in idxs:
+                    if i not in existing:
+                        skipped.append({"idx": i, "reason": "not found"})
+                    elif new_parent is not None and i == new_parent:
+                        skipped.append({"idx": i,
+                                        "reason": "is the target parent"})
+                    elif i in forbidden:
+                        skipped.append({"idx": i,
+                                        "reason": "would create a loop"})
+                    else:
+                        assigned.append(i)
+
+                if assigned:
+                    cur.execute(
+                        f"UPDATE {db.TABLE} SET parent_idx = %s, "
+                        f"updated_at = now() WHERE idx = ANY(%s)",
+                        (new_parent, assigned))
+    except psycopg2.errors.CheckViolation as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"That nesting would create a loop: {exc}")
+    finally:
+        conn.close()
+    return {"ok": True, "parent_idx": new_parent,
+            "assigned": assigned, "assigned_count": len(assigned),
+            "skipped": skipped}
 
 
 @app.post("/api/item/{idx}/print")

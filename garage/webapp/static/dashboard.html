@@ -26,6 +26,34 @@
             color:var(--ink); }
     .controls input#filter { flex:1; min-width:220px; }
     .count { color:var(--muted); font-size:.85rem; white-space:nowrap; }
+
+    /* bulk-action bar: appears when >=1 row is checked. */
+    .bulkbar { display:flex; gap:.6rem; flex-wrap:wrap; align-items:center;
+               background:#2a2318; border:1px solid var(--accent);
+               border-radius:12px; padding:.6rem .8rem; margin-bottom:.9rem; }
+    #selCount { color:var(--accent); font-weight:700; white-space:nowrap; }
+    .bulkbar button { font-size:.9rem; padding:.5rem .8rem; border-radius:10px;
+               border:1px solid var(--accent); background:var(--accent);
+               color:#14110d; font-weight:600; cursor:pointer; }
+    .bulkbar button:disabled { opacity:.4; cursor:not-allowed; }
+    .bulkbar button.ghost { background:transparent; color:var(--accent); }
+    #bulkMsg { color:var(--muted); font-size:.85rem; }
+    .combo { position:relative; }
+    #parentSearch { font-size:.95rem; padding:.5rem .7rem; border-radius:10px;
+            border:1px solid var(--line); background:#1a1610; color:var(--ink);
+            min-width:240px; }
+    .combo-list { position:absolute; z-index:30; top:112%; left:0;
+            min-width:280px; background:#211c15; border:1px solid var(--line);
+            border-radius:10px; max-height:280px; overflow:auto;
+            box-shadow:0 10px 28px #000b; }
+    .combo-item { padding:.5rem .6rem; cursor:pointer;
+            border-bottom:1px solid var(--line); font-size:.9rem; }
+    .combo-item:last-child { border-bottom:none; }
+    .combo-item:hover { background:#2a2318; }
+    .combo-item .code { color:var(--accent); font-weight:700; }
+    .combo-item .muted { color:var(--muted); font-size:.8rem; }
+    .combo-empty { padding:.6rem; color:var(--muted); font-size:.9rem; }
+
     .panel { background:var(--card); border:1px solid var(--line);
              border-radius:14px; padding:.4rem; overflow:auto; max-height:78vh; }
     table { border-collapse:collapse; width:100%; font-size:.9rem; }
@@ -34,14 +62,21 @@
                font-size:.78rem; letter-spacing:.02em; padding:.55rem .6rem;
                border-bottom:1px solid var(--line); cursor:pointer;
                white-space:nowrap; user-select:none; }
-    thead th:hover { color:var(--ink); }
+    thead th.selcol { cursor:default; }
+    thead th:not(.selcol):hover { color:var(--ink); }
     thead th .arrow { color:var(--accent); font-size:.72rem; }
     tbody td { padding:.45rem .6rem; border-bottom:1px solid var(--line);
                vertical-align:top; }
     tbody tr { cursor:pointer; }
     tbody tr:hover td { background:#272014; }
+    th.selcol, td.selcell { width:2.2rem; text-align:center; cursor:default;
+               padding-left:.3rem; padding-right:.3rem; }
+    .selbox { width:1.15rem; height:1.15rem; cursor:pointer; accent-color:var(--accent); }
     td.code { font-weight:700; color:var(--accent);
               font-variant-numeric:tabular-nums; white-space:nowrap; }
+    td.parent { color:var(--muted); font-variant-numeric:tabular-nums;
+                white-space:nowrap; }
+    td.parent .code { color:var(--accent); }
     td.num { font-variant-numeric:tabular-nums; text-align:right;
              white-space:nowrap; }
     td.lines { white-space:pre-line; max-width:320px; }
@@ -78,6 +113,20 @@
       <span class="count" id="count">Loading&hellip;</span>
     </div>
 
+    <!-- bulk-action bar: hidden until at least one row is checked -->
+    <div id="bulkbar" class="bulkbar hidden">
+      <span id="selCount">0 selected</span>
+      <div class="combo">
+        <input id="parentSearch" autocomplete="off"
+               placeholder="Assign to parent — search code / contents&hellip;" />
+        <div id="parentList" class="combo-list hidden"></div>
+      </div>
+      <button id="assignBtn" disabled>Assign to parent</button>
+      <button id="detachBtn" class="ghost">Detach (top-level)</button>
+      <button id="clearBtn" class="ghost">Clear</button>
+      <span id="bulkMsg"></span>
+    </div>
+
     <div id="loadErr" class="err hidden"></div>
 
     <!-- panel 1: the spreadsheet (first/only panel in v1) -->
@@ -85,6 +134,8 @@
       <table>
         <thead>
           <tr id="headRow">
+            <th class="selcol"><input type="checkbox" id="selAll" class="selbox"
+                aria-label="Select all shown" /></th>
             <th data-key="loc_code">Loc Code <span class="arrow"></span></th>
             <th data-key="room">Room <span class="arrow"></span></th>
             <th data-key="location">Location <span class="arrow"></span></th>
@@ -93,6 +144,7 @@
             <th data-key="media">Media <span class="arrow"></span></th>
             <th data-key="qty">Qty <span class="arrow"></span></th>
             <th data-key="status">Status <span class="arrow"></span></th>
+            <th data-key="parent_idx">Parent <span class="arrow"></span></th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
@@ -109,6 +161,9 @@
     let total = 0;                // full count for the "X items" label
     let sortKey = "loc_code";     // default sort column
     let sortDir = 1;              // 1 = asc, -1 = desc
+    const byIdx = new Map();      // idx -> item (parent-cell lookup + picker)
+    const selected = new Set();   // idx of checked rows (persists across filters)
+    let chosenParent = null;      // {idx, loc_code, label_line1} picked in the bar
 
     // loc_code is a letter prefix + number (e.g. GB38). Sort numerically-aware
     // by the trailing number (== idx), falling back to string for safety.
@@ -125,9 +180,9 @@
           va = (a.loc_code ?? "").toLowerCase();
           vb = (b.loc_code ?? "").toLowerCase();
         }
-      } else if (sortKey === "qty") {
-        va = a.qty == null ? -Infinity : a.qty;
-        vb = b.qty == null ? -Infinity : b.qty;
+      } else if (sortKey === "qty" || sortKey === "parent_idx") {
+        va = a[sortKey] == null ? -Infinity : a[sortKey];
+        vb = b[sortKey] == null ? -Infinity : b[sortKey];
       } else {
         va = (a[sortKey] ?? "").toString().toLowerCase();
         vb = (b[sortKey] ?? "").toString().toLowerCase();
@@ -155,12 +210,22 @@
       });
     }
 
+    function parentCell(it) {
+      if (it.parent_idx == null) return "";
+      const p = byIdx.get(it.parent_idx);
+      return p ? `<span class="code">${esc(p.loc_code)}</span>`
+               : `#${esc(it.parent_idx)}`;
+    }
+
     function rowHtml(it) {
       const retired = it.status !== "active";
       const cls = retired ? " retired" : "";
       const statusPill = `<span class="pill ${it.status === "active"
         ? "active" : ""}">${esc(it.status)}</span>`;
-      return `<tr onclick="location.href='/item/${it.idx}'">
+      return `<tr data-idx="${it.idx}">
+        <td class="selcell"><input type="checkbox" class="selbox"
+            data-idx="${it.idx}" ${selected.has(it.idx) ? "checked" : ""}
+            aria-label="Select ${esc(it.loc_code)}" /></td>
         <td class="code">${esc(it.loc_code)}</td>
         <td class="${cls.trim()}">${esc(it.room ?? "")}</td>
         <td class="${cls.trim()}">${esc(it.location ?? "")}</td>
@@ -169,6 +234,7 @@
         <td class="${cls.trim()}">${esc(it.media ?? "")}</td>
         <td class="num${cls}">${it.qty == null ? "" : esc(it.qty)}</td>
         <td>${statusPill}</td>
+        <td class="parent">${parentCell(it)}</td>
       </tr>`;
     }
 
@@ -176,24 +242,142 @@
       const rows = visibleRows().sort(cmp);
       $("tbody").innerHTML = rows.length
         ? rows.map(rowHtml).join("")
-        : `<tr><td colspan="8" class="empty">No rows match the current filter.</td></tr>`;
+        : `<tr><td colspan="10" class="empty">No rows match the current filter.</td></tr>`;
       $("count").textContent = `${total} items · showing ${rows.length}`;
-      // header sort arrows
+      // header sort arrows (skip the checkbox column, which has no data-key)
       for (const th of $("headRow").children) {
+        if (!th.dataset.key) continue;
         const a = th.querySelector(".arrow");
         a.textContent = th.dataset.key === sortKey
           ? (sortDir === 1 ? "▲" : "▼") : "";
       }
+      syncSelectAll();
     }
 
     // ---- header sort (toggle asc/desc) ----------------------------------
     for (const th of $("headRow").children) {
+      if (!th.dataset.key) continue;   // checkbox column: no sort
       th.onclick = () => {
         const key = th.dataset.key;
         if (key === sortKey) { sortDir *= -1; }
         else { sortKey = key; sortDir = 1; }
         render();
       };
+    }
+
+    // ---- selection ------------------------------------------------------
+    // Row navigation vs. checkbox: a click inside the checkbox cell never
+    // navigates; anywhere else on the row opens the item page.
+    $("tbody").addEventListener("click", (e) => {
+      if (e.target.closest(".selcell")) return;
+      const tr = e.target.closest("tr[data-idx]");
+      if (tr) location.href = `/item/${tr.dataset.idx}`;
+    });
+    $("tbody").addEventListener("change", (e) => {
+      const cb = e.target.closest(".selbox");
+      if (!cb) return;
+      const idx = +cb.dataset.idx;
+      if (cb.checked) selected.add(idx); else selected.delete(idx);
+      syncBar(); syncSelectAll();
+    });
+    // header "select all" toggles every currently-shown row
+    $("selAll").addEventListener("change", () => {
+      const on = $("selAll").checked;
+      for (const cb of $("tbody").querySelectorAll(".selbox")) {
+        cb.checked = on;
+        const idx = +cb.dataset.idx;
+        if (on) selected.add(idx); else selected.delete(idx);
+      }
+      syncBar();
+    });
+
+    function syncSelectAll() {
+      const boxes = [...$("tbody").querySelectorAll(".selbox")];
+      const checked = boxes.filter((b) => b.checked).length;
+      $("selAll").checked = boxes.length > 0 && checked === boxes.length;
+      $("selAll").indeterminate = checked > 0 && checked < boxes.length;
+    }
+
+    function syncBar() {
+      const n = selected.size;
+      $("selCount").textContent = `${n} selected`;
+      $("bulkbar").classList.toggle("hidden", n === 0);
+      $("assignBtn").disabled = !(n && chosenParent);
+      $("detachBtn").disabled = n === 0;
+    }
+
+    // ---- parent picker (client-side over the loaded rows; iOS-safe) -----
+    $("parentSearch").addEventListener("input", () => {
+      chosenParent = null; syncBar();
+      const q = $("parentSearch").value.trim().toLowerCase();
+      if (!q) { $("parentList").classList.add("hidden"); return; }
+      const hits = all.filter((it) =>
+        [it.loc_code, it.label_line1, it.room, it.location]
+          .filter(Boolean).join(" ").toLowerCase().includes(q)).slice(0, 12);
+      $("parentList").innerHTML = hits.length
+        ? hits.map((it) => `<div class="combo-item" data-idx="${it.idx}">
+            <span class="code">${esc(it.loc_code)}</span> ${esc(it.label_line1 ?? "")}
+            <span class="muted">${esc(it.room ?? "")} · ${esc(it.location ?? "")}</span>
+          </div>`).join("")
+        : `<div class="combo-empty">No item matches &ldquo;${esc(q)}&rdquo;.</div>`;
+      $("parentList").classList.remove("hidden");
+    });
+    // mousedown/touchstart (not click) so the pick registers before the
+    // input's blur can tear the list down — the app's iOS-safe combo pattern.
+    for (const ev of ["mousedown", "touchstart"]) {
+      $("parentList").addEventListener(ev, (e) => {
+        const item = e.target.closest(".combo-item");
+        if (!item) return;
+        e.preventDefault();
+        const it = byIdx.get(+item.dataset.idx);
+        if (!it) return;
+        chosenParent = it;
+        $("parentSearch").value =
+          it.loc_code + (it.label_line1 ? " — " + it.label_line1 : "");
+        $("parentList").classList.add("hidden");
+        syncBar();
+      });
+    }
+    document.addEventListener("click", (e) => {   // dismiss the list on outside click
+      if (!e.target.closest(".combo")) $("parentList").classList.add("hidden");
+    });
+
+    // ---- bulk assign / detach ------------------------------------------
+    $("assignBtn").addEventListener("click", () =>
+      bulkAssign(chosenParent ? chosenParent.idx : null));
+    $("detachBtn").addEventListener("click", () => bulkAssign(null));
+    $("clearBtn").addEventListener("click", () => {
+      selected.clear(); chosenParent = null;
+      $("parentSearch").value = ""; $("bulkMsg").textContent = "";
+      render(); syncBar();
+    });
+
+    async function bulkAssign(parentIdx) {
+      const idxs = [...selected];
+      if (!idxs.length) return;
+      $("assignBtn").disabled = true; $("detachBtn").disabled = true;
+      $("bulkMsg").textContent = "Working&hellip;";
+      try {
+        const r = await fetch("/api/items/parent", {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ idxs, parent_idx: parentIdx }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || r.status);
+        let msg = (parentIdx == null ? "Detached " : "Assigned ")
+          + data.assigned_count + (data.assigned_count === 1 ? " item" : " items");
+        if (data.skipped.length) {
+          const reason = data.skipped[0].reason;
+          msg += ` · ${data.skipped.length} skipped (${reason})`;
+        }
+        selected.clear(); chosenParent = null; $("parentSearch").value = "";
+        await load();               // refresh rows (parent column + fresh state)
+        $("bulkMsg").textContent = msg;
+        syncBar();
+      } catch (e) {
+        $("bulkMsg").textContent = "Failed: " + e.message;
+        syncBar();
+      }
     }
 
     // Rebuild the Location dropdown to the distinct locations for the current
@@ -226,12 +410,16 @@
         const data = await r.json();
         all = data.results;
         total = data.count;
-        // populate the Room dropdown from the data (sorted)
-        const rooms = [...new Set(all.map((it) => it.room).filter(Boolean))]
-          .sort((a, b) => a.localeCompare(b));
-        $("roomSel").insertAdjacentHTML("beforeend",
-          rooms.map((rm) => `<option value="${esc(rm)}">${esc(rm)}</option>`).join(""));
-        // populate the Location dropdown (all locations, since no room is chosen yet)
+        byIdx.clear();
+        for (const it of all) byIdx.set(it.idx, it);
+        // populate the Room dropdown from the data (sorted) — only on first load
+        if (!$("roomSel").dataset.filled) {
+          const rooms = [...new Set(all.map((it) => it.room).filter(Boolean))]
+            .sort((a, b) => a.localeCompare(b));
+          $("roomSel").insertAdjacentHTML("beforeend",
+            rooms.map((rm) => `<option value="${esc(rm)}">${esc(rm)}</option>`).join(""));
+          $("roomSel").dataset.filled = "1";
+        }
         rebuildLocations();
         render();
       } catch (e) {
