@@ -52,6 +52,39 @@ class FieldMappingError(Exception):
     """A template field name could not be mapped to an item value."""
 
 
+class FieldValueError(Exception):
+    """A mapped field value carries a byte the ordered-fill label path rejects
+    (a literal '^' or a Tab). Surfaced as a clean 400 validation message naming
+    the field (e.g. Line 2), NOT a 500 — the garage template is ordered-fill, so
+    these bytes would fail closed at the service (Argus)."""
+
+
+#: Bytes the ordered-fill path forbids in ANY cell (engine `_ORDERED_FORBIDDEN`).
+#: Mirrored here so the garage app can reject them with a friendly, field-named
+#: message before the POST, instead of letting the service 400 read as "service
+#: unavailable". Newlines are NOT included: Line 2 legitimately carries them
+#: (it is the template's multiline field) and the service guards the rest.
+_ORDERED_FORBIDDEN_CHARS = {"^": "the ^ character", "\t": "a tab character"}
+
+
+def _friendly_field_name(object_name: str) -> str:
+    """Human label for an object name, for user-facing validation messages."""
+    n = object_name.upper()
+    if "QR" in n or "URL" in n:
+        return "the item link"
+    if "LINE1" in n or "LINE_1" in n:
+        return "Line 1"
+    if "LINE2" in n or "LINE_2" in n:
+        return "Line 2"
+    if "LOCCODE" in n or "LOC_CODE" in n or "CODE" in n:
+        return "the location code"
+    if "LOCATION" in n:
+        return "Location"
+    if "ROOM" in n:
+        return "Room"
+    return object_name
+
+
 def _get_templates() -> list[dict]:
     try:
         resp = requests.get(f"{LABEL_SERVICE_URL}/templates", timeout=HTTP_TIMEOUT)
@@ -134,6 +167,18 @@ def print_item_label(item: dict, qr_url: str, copies: int = 1) -> dict:
             f"Template '{GARAGE_TEMPLATE}' declares field(s) this app cannot "
             f"map: {unmapped}. Update labels._map_field for the new names."
         )
+
+    # Fail-closed on the ordered-fill unsafe bytes BEFORE the POST, so the user
+    # sees a clean field-named validation error rather than a "service refused"
+    # 5xx. (The multi-line \n in Line 2 is allowed — it is the template's
+    # designated multiline field; only '^' and Tab are rejected here.)
+    for object_name, value in fields.items():
+        for ch, label in _ORDERED_FORBIDDEN_CHARS.items():
+            if ch in value:
+                raise FieldValueError(
+                    f"{_friendly_field_name(object_name)} can't contain "
+                    f"{label}. Please remove it and try again."
+                )
 
     try:
         resp = requests.post(

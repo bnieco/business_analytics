@@ -11,9 +11,12 @@
     body { margin:0; font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;
            background:var(--bg); color:var(--ink); line-height:1.4;
            padding:env(safe-area-inset-top) 0 2rem; }
-    header { padding:1rem 1.1rem .6rem; border-bottom:1px solid var(--line); }
+    header { padding:1rem 1.1rem .6rem; border-bottom:1px solid var(--line);
+             display:flex; align-items:baseline; gap:.8rem; flex-wrap:wrap; }
     header h1 { margin:0; font-size:1.2rem; letter-spacing:.02em; }
     header p { margin:.2rem 0 0; color:var(--muted); font-size:.82rem; }
+    header .spacer { flex:1; }
+    header a.browse { color:var(--accent); text-decoration:none; font-size:.85rem; }
     main { padding:1rem 1.1rem; max-width:560px; margin:0 auto; }
     .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
             padding:1rem; margin-bottom:1rem; }
@@ -55,12 +58,35 @@
     .kv b { color:var(--ink); }
     .big-code { font-size:1.5rem; font-weight:700; color:var(--accent);
                 margin:.3rem 0; }
+    /* custom combobox (replaces native <datalist>, which iOS Safari won't
+       render a tappable dropdown for) */
+    .combo { position:relative; }
+    .combo input { padding-right:2.1rem; }
+    .combo-caret { position:absolute; top:50%; right:.85rem;
+                   transform:translateY(-50%); color:var(--muted);
+                   font-size:.7rem; pointer-events:none; }
+    .combo-list { position:absolute; top:calc(100% + 4px); left:0; right:0;
+                  z-index:50; max-height:40vh; overflow:auto;
+                  background:var(--card); border:1px solid var(--line);
+                  border-radius:10px; box-shadow:0 6px 20px rgba(0,0,0,.45);
+                  -webkit-overflow-scrolling:touch; }
+    .combo-item { min-height:44px; display:flex; align-items:center;
+                  padding:.5rem .8rem; font-size:1.02rem; color:var(--ink);
+                  border-bottom:1px solid var(--line); cursor:pointer; }
+    .combo-item:last-child { border-bottom:none; }
+    .combo-item:active, .combo-item.active { background:var(--accent);
+                  color:#1a1408; }
+    .combo-empty { padding:.6rem .8rem; color:var(--muted); font-size:.9rem; }
   </style>
 </head>
 <body>
   <header>
-    <h1>ENR Garage Inventory</h1>
-    <p>Find a bin, or add a new one.</p>
+    <div>
+      <h1>ENR Garage Inventory</h1>
+      <p>Find a bin, or add a new one.</p>
+    </div>
+    <span class="spacer"></span>
+    <a class="browse" href="/dashboard">Browse all &rarr;</a>
   </header>
 
   <main>
@@ -76,6 +102,12 @@
         <input id="q" autocomplete="off" placeholder="e.g. wrenches, painters tape, GB38" />
         <div class="muted" style="margin-top:.4rem;">Searches label lines and
           media; a loc code like <b>GB38</b> works too.</div>
+        <label for="activeOnly" style="display:flex; align-items:center; gap:.45rem;
+               margin:.6rem 0 0; cursor:pointer;">
+          <input type="checkbox" id="activeOnly" checked
+                 style="width:auto; margin:0;" />
+          <span>Active only</span>
+        </label>
       </div>
       <div id="results"></div>
       <div id="lookupErr" class="err"></div>
@@ -88,11 +120,19 @@
         <div class="row">
           <div>
             <label for="aRoom">Room *</label>
-            <input id="aRoom" placeholder="e.g. Garage" />
+            <div class="combo" id="aRoomCombo">
+              <input id="aRoom" autocomplete="off" placeholder="e.g. Garage" />
+              <span class="combo-caret" aria-hidden="true">&#9660;</span>
+              <div class="combo-list hidden"></div>
+            </div>
           </div>
           <div>
             <label for="aLocation">Location *</label>
-            <input id="aLocation" placeholder="e.g. Ultra Cab 4" />
+            <div class="combo" id="aLocationCombo">
+              <input id="aLocation" autocomplete="off" placeholder="e.g. Ultra Cab 4" />
+              <span class="combo-caret" aria-hidden="true">&#9660;</span>
+              <div class="combo-list hidden"></div>
+            </div>
           </div>
         </div>
         <label for="aLine1">Label line 1</label>
@@ -152,14 +192,30 @@
       $("tabLookup").classList.toggle("inactive", which !== "lookup");
       $("tabAdd").classList.toggle("inactive", which !== "add");
     }
-    $("tabLookup").onclick = () => showTab("lookup");
-    $("tabAdd").onclick = () => showTab("add");
+    // Switch a tab AND record it in the URL hash so a reload lands back on the
+    // same tab (Brian couldn't tell a refresh took effect when Add always reset
+    // to Lookup). replaceState — not location.hash — so we don't stack history
+    // entries or scroll-jump to a #-anchored element.
+    function selectTab(which) {
+      showTab(which);
+      history.replaceState(null, "", which === "add" ? "#add" : "#lookup");
+    }
+    $("tabLookup").onclick = () => selectTab("lookup");
+    $("tabAdd").onclick = () => selectTab("add");
+    // On load, honor the hash (default Lookup when absent/unknown).
+    showTab(location.hash === "#add" ? "add" : "lookup");
 
     // ---- lookup: search-as-you-type -------------------------------------
     let timer = null, lastQ = "";
     $("q").addEventListener("input", () => {
       clearTimeout(timer);
       timer = setTimeout(runSearch, 250);
+    });
+    // Toggling the filter re-runs the current search immediately. Reset the
+    // de-dupe guard so the same query isn't suppressed as a repeat.
+    $("activeOnly").addEventListener("change", () => {
+      lastQ = "";
+      runSearch();
     });
     async function runSearch() {
       const q = $("q").value.trim();
@@ -168,7 +224,9 @@
       if (q === lastQ) return;
       lastQ = q;
       try {
-        const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+        const statusParam = $("activeOnly").checked ? "&status=active" : "";
+        const r = await fetch(
+          `/api/search?q=${encodeURIComponent(q)}${statusParam}`);
         if (!r.ok) throw new Error((await r.json()).detail || r.status);
         const data = await r.json();
         if (data.q !== $("q").value.trim()) return; // stale response
@@ -190,6 +248,97 @@
         <span class="where"> — ${esc(it.room ?? "?")} · ${esc(it.location ?? "—")}</span>${retired}
         <div class="lines">${lines}</div></a>`;
     }
+
+    // ---- add: Room/Location custom comboboxes ---------------------------
+    // Native <input list> + <datalist> renders NO tappable dropdown on iOS
+    // Safari (Brian's phone), so we roll our own: a plain text <input> plus a
+    // DOM list we render/filter/style ourselves. The input still accepts any
+    // brand-new free-text value (that feeds loc_code minting exactly as typed);
+    // the list only SUGGESTS existing values. Value source is a live array we
+    // push to after a save, so a new Room/Location is suggestable on the next
+    // "Add another" without a reload. Fetch failure is non-blocking — the field
+    // keeps working as plain free text with an empty suggestion set.
+    let roomValues = [];
+    let locationValues = [];
+
+    // Reusable factory: wires one text input to its sibling .combo-list.
+    // getValues() returns the current array (rooms or locations) at call time.
+    function setupCombo(inputId, getValues) {
+      const input = $(inputId);
+      const list = input.parentElement.querySelector(".combo-list");
+      const caret = input.parentElement.querySelector(".combo-caret");
+
+      function render() {
+        const q = input.value.trim().toLowerCase();
+        const all = getValues() || [];
+        const matches = q
+          ? all.filter((v) => v.toLowerCase().includes(q))
+          : all.slice();
+        if (!matches.length) {
+          list.innerHTML = `<div class="combo-empty">No matches — type to add a new one.</div>`;
+          return;
+        }
+        list.innerHTML = matches
+          .map((v) => `<div class="combo-item" data-val="${esc(v)}">${esc(v)}</div>`)
+          .join("");
+      }
+      function open() {
+        render();
+        list.classList.remove("hidden");
+      }
+      function close() { list.classList.add("hidden"); }
+
+      input.addEventListener("focus", open);
+      input.addEventListener("input", () => {
+        // re-filter live; keep the list open while typing
+        if (list.classList.contains("hidden")) list.classList.remove("hidden");
+        render();
+      });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") { close(); input.blur(); }
+      });
+      // Blur closes the list — but a tap on an item must register FIRST, so the
+      // item handler below cancels blur via preventDefault on mousedown/touch.
+      input.addEventListener("blur", () => { setTimeout(close, 120); });
+
+      // Caret toggles the full list without changing focus semantics.
+      caret.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        if (list.classList.contains("hidden")) { input.focus(); open(); }
+        else close();
+      });
+
+      // Tap-to-fill. mousedown/touchstart + preventDefault fires BEFORE the
+      // input's blur, so the selection lands instead of the list vanishing
+      // first (the classic mobile combobox bug).
+      function pick(e) {
+        const item = e.target.closest(".combo-item");
+        if (!item) return;
+        e.preventDefault();
+        input.value = item.getAttribute("data-val");
+        close();
+      }
+      list.addEventListener("mousedown", pick);
+      list.addEventListener("touchstart", pick, { passive: false });
+    }
+
+    setupCombo("aRoom", () => roomValues);
+    setupCombo("aLocation", () => locationValues);
+
+    // Add a value to a live suggestion array (dedup, ignore blanks).
+    function addComboValue(arr, value) {
+      if (value && !arr.includes(value)) arr.push(value);
+    }
+
+    (async () => {
+      try {
+        const r = await fetch("/api/facets");
+        if (!r.ok) return;
+        const f = await r.json();
+        roomValues = Array.isArray(f.rooms) ? f.rooms.slice() : [];
+        locationValues = Array.isArray(f.locations) ? f.locations.slice() : [];
+      } catch (e) { /* free text still works — don't block the form */ }
+    })();
 
     // ---- add: form -> preview -> confirm -> saved ------------------------
     function formBody() {
@@ -243,6 +392,10 @@
           body: JSON.stringify(formBody()) });
         if (!r.ok) throw new Error((await r.json()).detail || r.status);
         const it = (await r.json()).item;
+        // A newly-added Room/Location becomes immediately suggestable for the
+        // next "Add another" (no reload needed).
+        addComboValue(roomValues, it.room);
+        addComboValue(locationValues, it.location);
         $("sCode").textContent = it.loc_code;
         $("sWhere").textContent =
           `${it.room} · ${it.location}` +

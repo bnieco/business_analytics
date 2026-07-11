@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>ENR Garage Inventory — Browse all</title>
+  <style>
+    :root { --bg:#14110d; --card:#211c15; --ink:#f3ead9; --muted:#b6a888;
+            --accent:#c8a24a; --good:#5aa469; --line:#3a3023; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;
+           background:var(--bg); color:var(--ink); line-height:1.4;
+           padding:env(safe-area-inset-top) 0 2rem; }
+    header { padding:1rem 1.1rem .6rem; border-bottom:1px solid var(--line);
+             display:flex; align-items:baseline; gap:.8rem; flex-wrap:wrap; }
+    header h1 { margin:0; font-size:1.2rem; letter-spacing:.02em; }
+    header a { color:var(--accent); text-decoration:none; font-size:.85rem; }
+    header .spacer { flex:1; }
+    /* dashboard shell: header controls area (a summary strip / export can slot
+       in here later) + panels below. v1 = the table panel only. */
+    main { padding:1rem 1.1rem; max-width:1400px; margin:0 auto; }
+    .controls { display:flex; gap:.7rem; flex-wrap:wrap; align-items:center;
+                margin-bottom:.9rem; }
+    .controls input, .controls select { font-size:.95rem; padding:.55rem .7rem;
+            border-radius:10px; border:1px solid var(--line); background:#1a1610;
+            color:var(--ink); }
+    .controls input#filter { flex:1; min-width:220px; }
+    .count { color:var(--muted); font-size:.85rem; white-space:nowrap; }
+    .panel { background:var(--card); border:1px solid var(--line);
+             border-radius:14px; padding:.4rem; overflow:auto; max-height:78vh; }
+    table { border-collapse:collapse; width:100%; font-size:.9rem; }
+    thead th { position:sticky; top:0; z-index:2; background:#2a2318;
+               color:var(--muted); text-align:left; font-weight:600;
+               font-size:.78rem; letter-spacing:.02em; padding:.55rem .6rem;
+               border-bottom:1px solid var(--line); cursor:pointer;
+               white-space:nowrap; user-select:none; }
+    thead th:hover { color:var(--ink); }
+    thead th .arrow { color:var(--accent); font-size:.72rem; }
+    tbody td { padding:.45rem .6rem; border-bottom:1px solid var(--line);
+               vertical-align:top; }
+    tbody tr { cursor:pointer; }
+    tbody tr:hover td { background:#272014; }
+    td.code { font-weight:700; color:var(--accent);
+              font-variant-numeric:tabular-nums; white-space:nowrap; }
+    td.num { font-variant-numeric:tabular-nums; text-align:right;
+             white-space:nowrap; }
+    td.lines { white-space:pre-line; max-width:320px; }
+    td.retired { color:var(--muted); }
+    .pill { display:inline-block; font-size:.72rem; padding:.1rem .5rem;
+            border-radius:999px; background:#2c2517; color:var(--accent);
+            border:1px solid var(--line); white-space:nowrap; }
+    .pill.active { color:var(--good); }
+    .err { color:#e08a7a; font-size:.9rem; padding:1rem .2rem; }
+    .empty { color:var(--muted); padding:1.2rem .4rem; }
+    .hidden { display:none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Garage Inventory — Browse all</h1>
+    <span class="spacer"></span>
+    <a href="/">&larr; Lookup / Add</a>
+  </header>
+
+  <main>
+    <!-- dashboard shell: controls (summary strip would slot here later) -->
+    <div class="controls">
+      <input id="filter" autocomplete="off"
+             placeholder="Filter — type across code, room, location, contents, media&hellip;" />
+      <select id="roomSel"><option value="">All rooms</option></select>
+      <select id="locSel"><option value="">All locations</option></select>
+      <select id="statusSel">
+        <option value="">All statuses</option>
+        <option value="active">Active</option>
+        <option value="reserved">Reserved</option>
+        <option value="retired">Retired</option>
+      </select>
+      <span class="count" id="count">Loading&hellip;</span>
+    </div>
+
+    <div id="loadErr" class="err hidden"></div>
+
+    <!-- panel 1: the spreadsheet (first/only panel in v1) -->
+    <div class="panel">
+      <table>
+        <thead>
+          <tr id="headRow">
+            <th data-key="loc_code">Loc Code <span class="arrow"></span></th>
+            <th data-key="room">Room <span class="arrow"></span></th>
+            <th data-key="location">Location <span class="arrow"></span></th>
+            <th data-key="label_line1">Line 1 <span class="arrow"></span></th>
+            <th data-key="label_line2">Line 2 <span class="arrow"></span></th>
+            <th data-key="media">Media <span class="arrow"></span></th>
+            <th data-key="qty">Qty <span class="arrow"></span></th>
+            <th data-key="status">Status <span class="arrow"></span></th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const esc = (s) => (s ?? "").toString()
+      .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
+
+    let all = [];                 // every row from /api/items
+    let total = 0;                // full count for the "X items" label
+    let sortKey = "loc_code";     // default sort column
+    let sortDir = 1;              // 1 = asc, -1 = desc
+
+    // loc_code is a letter prefix + number (e.g. GB38). Sort numerically-aware
+    // by the trailing number (== idx), falling back to string for safety.
+    const codeNum = (c) => {
+      const m = /(\d+)\s*$/.exec(c ?? "");
+      return m ? parseInt(m[1], 10) : NaN;
+    };
+
+    function cmp(a, b) {
+      let va, vb;
+      if (sortKey === "loc_code") {
+        va = codeNum(a.loc_code); vb = codeNum(b.loc_code);
+        if (isNaN(va) || isNaN(vb)) {   // fall back to string compare
+          va = (a.loc_code ?? "").toLowerCase();
+          vb = (b.loc_code ?? "").toLowerCase();
+        }
+      } else if (sortKey === "qty") {
+        va = a.qty == null ? -Infinity : a.qty;
+        vb = b.qty == null ? -Infinity : b.qty;
+      } else {
+        va = (a[sortKey] ?? "").toString().toLowerCase();
+        vb = (b[sortKey] ?? "").toString().toLowerCase();
+      }
+      if (va < vb) return -1 * sortDir;
+      if (va > vb) return  1 * sortDir;
+      // stable-ish tiebreak by idx so equal keys keep a sane order
+      return (a.idx - b.idx) * sortDir;
+    }
+
+    function visibleRows() {
+      const q = $("filter").value.trim().toLowerCase();
+      const room = $("roomSel").value;
+      const loc = $("locSel").value;
+      const status = $("statusSel").value;
+      return all.filter((it) => {
+        if (room && (it.room ?? "") !== room) return false;
+        if (loc && (it.location ?? "") !== loc) return false;
+        if (status && (it.status ?? "") !== status) return false;
+        if (!q) return true;
+        const hay = [it.loc_code, it.room, it.location, it.label_line1,
+                     it.label_line2, it.media, it.qty, it.status]
+          .filter((v) => v != null).join(" ").toLowerCase();
+        return hay.includes(q);
+      });
+    }
+
+    function rowHtml(it) {
+      const retired = it.status !== "active";
+      const cls = retired ? " retired" : "";
+      const statusPill = `<span class="pill ${it.status === "active"
+        ? "active" : ""}">${esc(it.status)}</span>`;
+      return `<tr onclick="location.href='/item/${it.idx}'">
+        <td class="code">${esc(it.loc_code)}</td>
+        <td class="${cls.trim()}">${esc(it.room ?? "")}</td>
+        <td class="${cls.trim()}">${esc(it.location ?? "")}</td>
+        <td class="lines${cls}">${esc(it.label_line1 ?? "")}</td>
+        <td class="lines${cls}">${esc(it.label_line2 ?? "")}</td>
+        <td class="${cls.trim()}">${esc(it.media ?? "")}</td>
+        <td class="num${cls}">${it.qty == null ? "" : esc(it.qty)}</td>
+        <td>${statusPill}</td>
+      </tr>`;
+    }
+
+    function render() {
+      const rows = visibleRows().sort(cmp);
+      $("tbody").innerHTML = rows.length
+        ? rows.map(rowHtml).join("")
+        : `<tr><td colspan="8" class="empty">No rows match the current filter.</td></tr>`;
+      $("count").textContent = `${total} items · showing ${rows.length}`;
+      // header sort arrows
+      for (const th of $("headRow").children) {
+        const a = th.querySelector(".arrow");
+        a.textContent = th.dataset.key === sortKey
+          ? (sortDir === 1 ? "▲" : "▼") : "";
+      }
+    }
+
+    // ---- header sort (toggle asc/desc) ----------------------------------
+    for (const th of $("headRow").children) {
+      th.onclick = () => {
+        const key = th.dataset.key;
+        if (key === sortKey) { sortDir *= -1; }
+        else { sortKey = key; sortDir = 1; }
+        render();
+      };
+    }
+
+    // Rebuild the Location dropdown to the distinct locations for the current
+    // room (or all rooms when none selected), sorted. Resets to "All locations".
+    function rebuildLocations() {
+      const room = $("roomSel").value;
+      const locs = [...new Set(all
+        .filter((it) => !room || (it.room ?? "") === room)
+        .map((it) => it.location).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b));
+      $("locSel").innerHTML = `<option value="">All locations</option>`
+        + locs.map((lc) => `<option value="${esc(lc)}">${esc(lc)}</option>`).join("");
+    }
+
+    $("filter").addEventListener("input", render);
+    $("roomSel").addEventListener("change", () => {
+      // cascade: room governs which locations are offered; reset to "All"
+      // so a stale location from a prior room can't zero out the table.
+      rebuildLocations();
+      render();
+    });
+    $("locSel").addEventListener("change", render);
+    $("statusSel").addEventListener("change", render);
+
+    // ---- load -----------------------------------------------------------
+    async function load() {
+      try {
+        const r = await fetch("/api/items");
+        if (!r.ok) throw new Error((await r.json()).detail || r.status);
+        const data = await r.json();
+        all = data.results;
+        total = data.count;
+        // populate the Room dropdown from the data (sorted)
+        const rooms = [...new Set(all.map((it) => it.room).filter(Boolean))]
+          .sort((a, b) => a.localeCompare(b));
+        $("roomSel").insertAdjacentHTML("beforeend",
+          rooms.map((rm) => `<option value="${esc(rm)}">${esc(rm)}</option>`).join(""));
+        // populate the Location dropdown (all locations, since no room is chosen yet)
+        rebuildLocations();
+        render();
+      } catch (e) {
+        $("loadErr").classList.remove("hidden");
+        $("loadErr").textContent = "Could not load inventory: " + e.message;
+        $("count").textContent = "";
+      }
+    }
+    load();
+  </script>
+</body>
+</html>
