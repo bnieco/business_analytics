@@ -8,3 +8,7 @@ __pycache__/
 
 # Google Cloud service account keys (never commit)
 *-service-account.json
+
+# Local env backups + IDE metadata (never commit)
+.env.bak*
+.idea/
