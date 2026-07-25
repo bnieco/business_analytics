@@ -103,9 +103,17 @@ class PrintLabelBody(BaseModel):
 # --------------------------------------------------------------------------- #
 # Page
 # --------------------------------------------------------------------------- #
+# Mirror garage's mechanism: no-cache (NOT no-store) so the browser must
+# revalidate before reusing a cached copy — the ETag/Last-Modified still yield a
+# cheap 304 when nothing changed, but a redeploy can never be served stale (the
+# iPhone-Safari stale-HTML bug). Matters more now the page is a PWA install
+# (stale-shell risk); the inline CSS/JS means the one page response covers it.
+_NO_CACHE = {"Cache-Control": "no-cache"}
+
+
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html", headers=_NO_CACHE)
 
 
 # --------------------------------------------------------------------------- #

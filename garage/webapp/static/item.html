@@ -3,6 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <!-- PWA / Add-to-Home-Screen. NOTE: this block is duplicated across the app's pages (no shared template) — if you edit it, update index.html, item.html, and dashboard.html together, and bump the ?v= on manifest/icon refs. -->
+  <link rel="manifest" href="/static/manifest.json" />
+  <meta name="theme-color" content="#14110d" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="ENR Garage" />
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
   <title>ENR Garage Inventory — Item</title>
   <style>
     :root { --bg:#14110d; --card:#211c15; --ink:#f3ead9; --muted:#b6a888;
