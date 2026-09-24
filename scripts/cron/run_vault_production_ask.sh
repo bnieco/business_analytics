@@ -10,9 +10,10 @@
 # explicit choice (2026-09-14), not an implementation detail -- do not widen it here.
 #
 # Handles per-run dated log files (launchd's StandardOutPath cannot expand variables, so
-# the wrapper does the redirection instead). The dated run log lives in the SynologyDrive
-# Inbox, which is fine at RUN time; the EX_CONFIG problem only affects launchd stdio
-# opened at job-spawn time, which the plist keeps on local APFS.
+# the wrapper does the redirection instead). The dated run log lives under ENR_LOG_ROOT
+# when set, else the SynologyDrive Inbox/_logs, which is fine at RUN time; the EX_CONFIG
+# problem only affects launchd stdio opened at job-spawn time, which the plist keeps on
+# local APFS.
 #
 # Invoked daily at 06:45 by ~/Library/LaunchAgents/com.eldersnine.vault-production-ask.plist
 # -- 30 minutes after the 06:15 Etsy ingest + raw->core load, so core.orders already holds
@@ -24,7 +25,10 @@ set -u  # unset vars are errors; do NOT set -e (capture all output even on failu
 
 PROJECT_DIR="/Users/bnieco/PycharmProjects/business_analytics"
 VENV_PY="${PROJECT_DIR}/venv/bin/python"
-LOG_DIR="/Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync/Documents/Business/Inbox/_logs/vault_production_ask"
+# ENR_LOG_ROOT: optional override for the log root. Unset (MacBook) = the SynologyDrive
+# Inbox/_logs path used today. The M6 (Mac mini) plists set it to /Users/bnieco/Library/Logs/enr
+# so the job does not depend on the Synology Drive client being up.
+LOG_DIR="${ENR_LOG_ROOT:-/Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync/Documents/Business/Inbox/_logs}/vault_production_ask"
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 LOG_FILE="${LOG_DIR}/vault_production_ask_${TIMESTAMP}.log"

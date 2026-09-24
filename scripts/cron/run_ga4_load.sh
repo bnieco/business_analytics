@@ -11,7 +11,10 @@ set -u  # treat unset vars as errors; do NOT set -e (we want to capture all outp
 
 PROJECT_DIR="/Users/bnieco/PycharmProjects/business_analytics"
 VENV_PY="${PROJECT_DIR}/venv/bin/python"
-LOG_DIR="/Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync/Documents/Business/Inbox/_logs/ga4_load"
+# ENR_LOG_ROOT: optional override for the log root. Unset (MacBook) = the SynologyDrive
+# Inbox/_logs path used today. The M6 (Mac mini) plists set it to /Users/bnieco/Library/Logs/enr
+# so the job does not depend on the Synology Drive client being up.
+LOG_DIR="${ENR_LOG_ROOT:-/Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync/Documents/Business/Inbox/_logs}/ga4_load"
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 LOG_FILE="${LOG_DIR}/load_ga4_${TIMESTAMP}.log"

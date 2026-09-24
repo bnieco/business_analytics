@@ -3,9 +3,9 @@
 #
 # Handles per-run dated log files (launchd's StandardOutPath cannot expand
 # variables, so this wrapper does the redirection instead). The dated run log
-# lives in the SynologyDrive Inbox (written at run time = OK on the mount;
-# the EX_CONFIG issue only affects launchd stdio opened at job-spawn time, which
-# the plist keeps on local APFS).
+# lives under ENR_LOG_ROOT when set, else the SynologyDrive Inbox/_logs (written at
+# run time = OK on the mount; the EX_CONFIG issue only affects launchd stdio opened
+# at job-spawn time, which the plist keeps on local APFS).
 #
 # Invoked daily at 06:15 by ~/Library/LaunchAgents/com.eldersnine.etsy-api-load.plist
 # (after the GA4 load at 06:00).
@@ -16,7 +16,10 @@ set -u  # unset vars are errors; do NOT set -e (capture all output even on failu
 
 PROJECT_DIR="/Users/bnieco/PycharmProjects/business_analytics"
 VENV_PY="${PROJECT_DIR}/venv/bin/python"
-LOG_DIR="/Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync/Documents/Business/Inbox/_logs/etsy_api_load"
+# ENR_LOG_ROOT: optional override for the log root. Unset (MacBook) = the SynologyDrive
+# Inbox/_logs path used today. The M6 (Mac mini) plists set it to /Users/bnieco/Library/Logs/enr
+# so the job does not depend on the Synology Drive client being up.
+LOG_DIR="${ENR_LOG_ROOT:-/Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync/Documents/Business/Inbox/_logs}/etsy_api_load"
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 LOG_FILE="${LOG_DIR}/etsy_api_load_${TIMESTAMP}.log"
