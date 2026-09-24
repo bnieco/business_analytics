@@ -96,6 +96,66 @@
   </style>
 </head>
 <body>
+<!-- ==========================================================================
+     SHARED DASHBOARD NAV — copied snippet, identical bytes in every app.
+     Paste immediately after <body>. Self-contained: no external CSS/JS/fonts,
+     so it works under the time-tracker's strict CSP and offline.
+
+     Self-highlighting: the current dashboard is detected at runtime by matching
+     window.location.origin against each link's origin. That is why this file is
+     byte-identical everywhere — no per-app "which one am I" edit, so a copied
+     snippet can't drift into N slightly-different versions.
+
+     Command Center opens in a NEW TAB (it hosts the live terminals; navigating
+     away kills access to them). Every other dashboard navigates in place.
+
+     Class prefix `ccnav-` avoids collisions with host-app styles.
+     ========================================================================== -->
+<nav class="ccnav" aria-label="Dashboards">
+  <div class="ccnav-inner">
+    <a class="ccnav-link ccnav-hub" href="https://brians-macbook-pro-m4.taile3e09a.ts.net/"
+       target="_blank" rel="noopener noreferrer">🖥 Command Center<span class="ccnav-ext">↗</span></a>
+    <span class="ccnav-sep" aria-hidden="true"></span>
+    <a class="ccnav-link" href="http://nasds1621.taile3e09a.ts.net:8787">📮 Apply</a>
+    <a class="ccnav-link" href="http://nasds1621.taile3e09a.ts.net:8788">📊 Phase 1</a>
+    <a class="ccnav-link" href="http://nasds1621.taile3e09a.ts.net:8789">❤️ Health</a>
+    <a class="ccnav-link" href="http://nasds1621.taile3e09a.ts.net:8746">⏱ Time Tracker</a>
+    <span class="ccnav-sep" aria-hidden="true"></span>
+    <a class="ccnav-link" href="http://nasds1621.taile3e09a.ts.net:8745">🧰 Garage</a>
+    <a class="ccnav-link" href="http://nasds1621.taile3e09a.ts.net:8743">🎞 Filament Intake</a>
+    <a class="ccnav-link" href="http://nasds1621.taile3e09a.ts.net:7912">🧵 Spoolman</a>
+    <a class="ccnav-link" href="http://nasds1621.taile3e09a.ts.net:8744/docs">🏷 Labels</a>
+  </div>
+</nav>
+<style>
+.ccnav{background:#0d1117;border-bottom:1px solid #30363d;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;position:sticky;top:0;z-index:2147483000}
+.ccnav-inner{display:flex;align-items:center;gap:.15rem;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:.4rem .6rem}
+.ccnav-inner::-webkit-scrollbar{display:none}
+.ccnav-link{color:#8b949e;text-decoration:none;font-size:.82rem;font-weight:600;white-space:nowrap;padding:.34rem .6rem;border-radius:6px;line-height:1.2;transition:background .12s,color .12s}
+.ccnav-link:hover{color:#c9d1d9;background:#161b22}
+.ccnav-link.is-current{color:#58a6ff;background:#161b22;cursor:default}
+.ccnav-hub{color:#c9d1d9}
+.ccnav-ext{font-size:.68rem;opacity:.55;margin-left:.22rem;vertical-align:super}
+.ccnav-sep{flex:0 0 1px;height:16px;background:#30363d;margin:0 .35rem}
+@media (max-width:600px){.ccnav-link{font-size:.78rem;padding:.3rem .45rem}}
+@media print{.ccnav{display:none}}
+</style>
+<script>
+(function () {
+  // Mark the link whose origin matches this page. Origin-based (not full URL)
+  // so any deep path inside an app still highlights that app correctly.
+  var here = window.location.origin;
+  var links = document.querySelectorAll('.ccnav-link');
+  for (var i = 0; i < links.length; i++) {
+    var a = links[i];
+    if (a.origin !== here) continue;
+    a.classList.add('is-current');
+    a.removeAttribute('target');          // never re-open self in a new tab
+    a.addEventListener('click', function (e) { e.preventDefault(); });
+  }
+})();
+</script>
+<!-- ===================== END SHARED DASHBOARD NAV ===================== -->
   <header>
     <h1 id="hCode">&hellip;</h1>
     <a href="/">&larr; inventory</a>
