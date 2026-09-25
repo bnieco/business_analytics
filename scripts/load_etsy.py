@@ -52,11 +52,19 @@ DB_CONFIG = {
     "password": os.getenv("BUSINESS_DB_PASSWORD"),
 }
 
-DEFAULT_SOURCE_DIR = Path(
+# Synology-synced Business folder. On the MacBook the Drive client syncs it to
+# .../SynologyDrive-HomeSync/Documents/Business; on the M6 Mac mini the same contents
+# land directly in .../SynologyDrive-HomeSync. Override with ENR_BUSINESS_ROOT.
+BUSINESS_ROOT = Path(
     os.getenv(
-        "ETSY_DATA_DIR",
-        "/Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync/Documents/Business/_Data/ENR/Etsy"
+        "ENR_BUSINESS_ROOT",
+        "/Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync/Documents/Business",
     )
+)
+
+# ETSY_DATA_DIR remains an explicit override; its default derives from BUSINESS_ROOT.
+DEFAULT_SOURCE_DIR = Path(
+    os.getenv("ETSY_DATA_DIR", str(BUSINESS_ROOT / "_Data" / "ENR" / "Etsy"))
 )
 
 FILE_PATTERNS = [

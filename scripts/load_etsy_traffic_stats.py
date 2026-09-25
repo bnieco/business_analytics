@@ -61,9 +61,16 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 DEFAULT_MANIFEST = PROJECT_ROOT / "scripts" / "data" / "etsy_traffic_stats_manifest.json"
-DEFAULT_INPUT_DIR = Path(
-    "/Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync/Documents/Business/Inbox/"
+# Synology-synced Business folder. On the MacBook the Drive client syncs it to
+# .../SynologyDrive-HomeSync/Documents/Business; on the M6 Mac mini the same contents
+# land directly in .../SynologyDrive-HomeSync. Override with ENR_BUSINESS_ROOT.
+BUSINESS_ROOT = Path(
+    os.getenv(
+        "ENR_BUSINESS_ROOT",
+        "/Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync/Documents/Business",
+    )
 )
+DEFAULT_INPUT_DIR = BUSINESS_ROOT / "Inbox"
 
 DB_CONFIG = {
     "host":     os.getenv("BUSINESS_DB_HOST", "10.0.0.16"),

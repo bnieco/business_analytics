@@ -31,10 +31,16 @@ DB_CONFIG = {
     "password": os.getenv("BUSINESS_DB_PASSWORD"),
 }
 
-DEFAULT_REVIEWS_FILE = Path(
-    "/Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync"
-    "/Documents/Business/_Data/ENR/Etsy/reviews.json"
+# Synology-synced Business folder. On the MacBook the Drive client syncs it to
+# .../SynologyDrive-HomeSync/Documents/Business; on the M6 Mac mini the same contents
+# land directly in .../SynologyDrive-HomeSync. Override with ENR_BUSINESS_ROOT.
+BUSINESS_ROOT = Path(
+    os.getenv(
+        "ENR_BUSINESS_ROOT",
+        "/Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync/Documents/Business",
+    )
 )
+DEFAULT_REVIEWS_FILE = BUSINESS_ROOT / "_Data" / "ENR" / "Etsy" / "reviews.json"
 
 
 def parse_date(s: str | None):
