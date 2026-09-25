@@ -2,7 +2,7 @@
   "_meta": {
     "description": "Hand-extracted data from 12 Etsy Shop Manager Stats 'Referrer detail' PDFs. The PDFs are screenshot-style exports — page 1 of each pagination block is the only data captured. For categories where the PDF page-1 sub-source list does not sum to the dashboard category total, an 'Other (uncaptured)' row is added so per-category sums reconcile to the screenshot totals supplied by Brian.",
     "source_dir": "{ENR_BUSINESS_ROOT}/Inbox/",
-    "source_dir_note": "Documentation only (the loader does not read this key). {ENR_BUSINESS_ROOT} is the Synology-synced Business folder: /Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync/Documents/Business on the MacBook, /Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync on the M6 Mac mini.",
+    "source_dir_note": "Documentation only (the loader does not read this key). {ENR_BUSINESS_ROOT} is the Synology-synced Business folder: /Users/bnieco/Library/CloudStorage/SynologyDrive-HomeSync/Documents/Business, the same path on the MacBook and the M6 Mac mini (on the M6, ~/Library/CloudStorage/SynologyDrive-HomeSync is a link to ~/SynologyDrive). ENR_BUSINESS_ROOT is an optional override; leave it unset on both hosts.",
     "extracted_by": "Edison",
     "extracted_at": "2026-05-23",
     "categories_with_sub_source_breakdown": ["Social Media", "Direct & Other", "Etsy Marketing SEO", "Advertising"],

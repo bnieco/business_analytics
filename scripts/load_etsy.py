@@ -52,9 +52,9 @@ DB_CONFIG = {
     "password": os.getenv("BUSINESS_DB_PASSWORD"),
 }
 
-# Synology-synced Business folder. On the MacBook the Drive client syncs it to
-# .../SynologyDrive-HomeSync/Documents/Business; on the M6 Mac mini the same contents
-# land directly in .../SynologyDrive-HomeSync. Override with ENR_BUSINESS_ROOT.
+# Synology-synced Business folder. Same path on the MacBook and the M6 Mac mini
+# (on the M6, ~/Library/CloudStorage/SynologyDrive-HomeSync is a link to ~/SynologyDrive).
+# ENR_BUSINESS_ROOT is an optional override; leave it unset on both hosts.
 BUSINESS_ROOT = Path(
     os.getenv(
         "ENR_BUSINESS_ROOT",
