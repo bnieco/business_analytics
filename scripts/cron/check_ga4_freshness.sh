@@ -33,10 +33,24 @@
 #   GA4_FRESH_DRY_RUN=1 ENR_ALERT_LOG=/tmp/x/alerts.log ENR_ASK_INBOX_DIR=/tmp/x/inbox \
 #     bash scripts/cron/check_ga4_freshness.sh
 #
-# CADENCE & THRESHOLD LOGIC (revised 2026-06-04, Task #65)
+# CADENCE & THRESHOLD LOGIC (revised 2026-06-04, Task #65; THRESHOLD 2 -> 3 on 2026-10-13)
 # --------------------------------------------------------
 # Scheduled ONCE daily at 17:00 (com.eldersnine.ga4-freshness-check.plist), one
-# hour after the 16:00 GA4 afternoon load. THRESHOLD stays at 2.
+# hour after the 16:00 GA4 afternoon load. THRESHOLD is 3 since 2026-10-13
+# (it was 2 from 2026-06-04 to 2026-10-13; see the dated note below).
+#
+# 2026-10-13 THRESHOLD 2 -> 3 (Brian, D-BUSINESS-005 option A):
+#   Google's GA4 daily export (D-1) now publishes late in the evening instead of
+#   around 08:00 the next morning. Observed publish times (MST):
+#     events for 10-04 published 10-05 08:39
+#     events for 10-05 published 10-06 10:08
+#     events for 10-06 published 10-07 19:16
+#     events for 10-07 published 10-08 22:39
+#   So at 17:00 a HEALTHY warehouse now sits at days_behind=2 (D-1 has not been
+#   exported yet), and THRESHOLD=2 filed a false "stale" ASK every day from 10-07.
+#   Trade-off: with THRESHOLD=3 a real load stall surfaces about one day later
+#   than before. The 2026-06-04 reasoning below still holds for the cadence; its
+#   "post-16:00 a healthy warehouse is days_behind<=1" assumption no longer does.
 #
 # Why 17:00 and one check, not 07:00:
 #   * GA4 BigQuery exports yesterday (D-1) during the day, so a 06:00 load can
@@ -68,7 +82,7 @@ set -u
 PROJECT_DIR="/Users/bnieco/PycharmProjects/business_analytics"
 ENV_FILE="${PROJECT_DIR}/.env"
 PSQL="/opt/homebrew/opt/libpq/bin/psql"
-THRESHOLD=2                                        # alert when days_behind >= 2
+THRESHOLD=3                                        # alert when days_behind >= 3
 
 DRY_RUN="${GA4_FRESH_DRY_RUN:-0}"
 if [[ "${DRY_RUN}" == "1" ]]; then
