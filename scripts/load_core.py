@@ -15,6 +15,7 @@ Usage:
 import argparse
 import os
 import unicodedata
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -123,18 +124,35 @@ def resolve_part(listing_id: str, item_name: str, part_map: dict, sku_to_part: d
     return sku_to_part.get(sku) if sku else None
 
 
-def derive_status(raw_order) -> tuple[str, object]:
+def derive_status(raw_order, ordered_at=None) -> tuple[str, object]:
     """Return (core status, fulfilled_at) for a raw.etsy_orders row.
 
     Shipped when Etsy reports is_shipped OR a shipment date exists (some
     shipped receipts, e.g. custom/hand-delivered, have is_shipped=True but no
     shipment timestamp, so date_shipped alone undercounts). fulfilled_at is the
-    shipment date when known, else NULL. Canceled receipts map to 'cancelled'.
+    shipment date, else the receipt's updated_timestamp date (UTC, same
+    convention as sale_date/date_shipped). core.orders requires fulfilled_at
+    NOT NULL and >= ordered_at for 'fulfilled' (orders_check, orders_check1);
+    if neither date satisfies that, the order stays 'open' with a warning.
+    ordered_at defaults to the raw sale_date. Canceled -> 'cancelled'.
     """
     date_shipped = raw_order.get("date_shipped")
     raw_status = (coerce(raw_order.get("status")) or "").lower()
     if date_shipped or raw_order.get("is_shipped") is True:
-        return "fulfilled", date_shipped
+        fulfilled_at = date_shipped
+        if fulfilled_at is None and raw_order.get("updated_timestamp"):
+            fulfilled_at = datetime.fromtimestamp(
+                int(raw_order["updated_timestamp"]), tz=timezone.utc
+            ).date()
+        if ordered_at is None:
+            ordered_at = raw_order.get("sale_date")
+        if isinstance(ordered_at, datetime):
+            ordered_at = ordered_at.date()
+        if fulfilled_at is None or (ordered_at is not None and fulfilled_at < ordered_at):
+            print(f"  WARNING: receipt {raw_order.get('order_id')} shipped on Etsy but no usable "
+                  f"fulfilled date (fulfilled={fulfilled_at}, ordered={ordered_at}); leaving 'open'")
+            return "open", None
+        return "fulfilled", fulfilled_at
     if raw_status in ("canceled", "cancelled"):
         return "cancelled", None
     return "open", None
@@ -255,7 +273,7 @@ def load(dry_run: bool = False):
     # Only 'open' rows move; fulfilled/cancelled rows are never touched.
     raw_by_id = {coerce(r["order_id"]): r for r in raw_orders}
     cur.execute("""
-        SELECT order_id, source_order_id FROM core.orders
+        SELECT order_id, source_order_id, ordered_at FROM core.orders
         WHERE source = 'etsy' AND status = 'open'
     """)
     status_updates = []
@@ -263,7 +281,7 @@ def load(dry_run: bool = False):
         raw = raw_by_id.get(o["source_order_id"])
         if raw is None:
             continue
-        new_status, fulfilled_at = derive_status(raw)
+        new_status, fulfilled_at = derive_status(raw, o["ordered_at"])
         if new_status != "open":
             status_updates.append((o["order_id"], o["source_order_id"], new_status, fulfilled_at))
     print(f"Status re-sync: {len(status_updates)} open order(s) to update")
