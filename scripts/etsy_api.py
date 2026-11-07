@@ -745,6 +745,18 @@ class EntityResult:
     error: str | None = None
 
 
+def fetch_open_receipt_ids(engine: Engine) -> list[int]:
+    """Etsy receipt ids still 'open' in core.orders (read-only query)."""
+    with engine.connect() as conn:
+        return [
+            int(r[0]) for r in conn.execute(text(
+                "SELECT source_order_id FROM core.orders "
+                "WHERE source = 'etsy' AND status = 'open' "
+                "AND source_order_id ~ '^[0-9]+$' ORDER BY order_id"
+            ))
+        ]
+
+
 def load_receipts_and_items(
     engine: Engine, client: EtsyClient, shop_id: str,
     start: date, end: date, loaded_at: datetime,
@@ -760,7 +772,8 @@ def load_receipts_and_items(
         "min_created": _epoch(start),
         "max_created": _epoch(end, end=True),
     }
-    for receipt in client.paginate(f"/shops/{shop_id}/receipts", params=params):
+    def _ingest(receipt: dict) -> None:
+        nonlocal max_created
         order_rows.append(receipt_to_order_row(receipt, loaded_at))
         ct = receipt.get("created_timestamp")
         if ct and (max_created is None or ct > max_created):
@@ -773,6 +786,21 @@ def load_receipts_and_items(
             transactions = payload.get("results", []) or []
         for t in transactions:
             item_rows.append(transaction_to_item_row(t, receipt, loaded_at))
+
+    seen: set[int] = set()
+    for receipt in client.paginate(f"/shops/{shop_id}/receipts", params=params):
+        seen.add(receipt.get("receipt_id"))
+        _ingest(receipt)
+
+    # Status re-sync: the window above is keyed on created date, so a receipt
+    # that ships after it ages out of the window would never be re-pulled and
+    # its raw (and core) status would stay 'Paid'/'open' forever. Re-fetch
+    # every receipt still open in core.orders that the window did not cover.
+    for rid in fetch_open_receipt_ids(engine):
+        if rid in seen:
+            continue
+        _ingest(client.get(f"/shops/{shop_id}/receipts/{rid}"))
+        seen.add(rid)
 
     orders_res = _safe_delete_reload(
         engine, entity="orders", table="raw.etsy_orders", id_column="order_id",
@@ -977,6 +1005,8 @@ def cmd_dry_run(start: date, end: date, backfill_days: int) -> int:
     print(f"  - refresh the access token at {TOKEN_URL}")
     print(f"  - resolve shop_id ({'from .env' if ETSY_SHOP_ID else 'via /users/me lookup'})")
     print(f"  - GET /shops/<shop_id>/receipts  (min/max_created over the window) -> raw.etsy_orders")
+    print(f"  - GET /shops/<shop_id>/receipts/<id> for receipts still open in core.orders")
+    print(f"      outside the window (status re-sync)                           -> raw.etsy_orders")
     print(f"  - GET receipt transactions                                        -> raw.etsy_order_items")
     print(f"  - GET /shops/<shop_id>/listings  (all states)                     -> raw.etsy_listings")
     print(f"      ^ same responses also snapshotted (views/num_favorers)        -> raw.etsy_listing_stats_daily")

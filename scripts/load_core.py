@@ -2,7 +2,9 @@
 load_core.py — Populate core.customers, core.orders, core.order_items
 from raw.etsy_orders and raw.etsy_order_items.
 
-Idempotent: skips orders already present by source_order_id.
+Idempotent: skips orders already present by source_order_id, except that
+existing orders still 'open' are re-synced (status + fulfilled_at) from the
+latest raw.etsy_orders row once Etsy reports them shipped or canceled.
 Unresolved listing_ids are logged and skipped (not inserted).
 
 Usage:
@@ -121,6 +123,23 @@ def resolve_part(listing_id: str, item_name: str, part_map: dict, sku_to_part: d
     return sku_to_part.get(sku) if sku else None
 
 
+def derive_status(raw_order) -> tuple[str, object]:
+    """Return (core status, fulfilled_at) for a raw.etsy_orders row.
+
+    Shipped when Etsy reports is_shipped OR a shipment date exists (some
+    shipped receipts, e.g. custom/hand-delivered, have is_shipped=True but no
+    shipment timestamp, so date_shipped alone undercounts). fulfilled_at is the
+    shipment date when known, else NULL. Canceled receipts map to 'cancelled'.
+    """
+    date_shipped = raw_order.get("date_shipped")
+    raw_status = (coerce(raw_order.get("status")) or "").lower()
+    if date_shipped or raw_order.get("is_shipped") is True:
+        return "fulfilled", date_shipped
+    if raw_status in ("canceled", "cancelled"):
+        return "cancelled", None
+    return "open", None
+
+
 # ---------------------------------------------------------------------------
 # Load
 # ---------------------------------------------------------------------------
@@ -202,8 +221,7 @@ def load(dry_run: bool = False):
             skipped_orders.append((r["order_id"], "no customer_id resolved"))
             continue
 
-        date_shipped = r["date_shipped"]
-        status = "fulfilled" if date_shipped else "open"
+        status, date_shipped = derive_status(r)
 
         if not dry_run:
             cur.execute("""
@@ -230,6 +248,32 @@ def load(dry_run: bool = False):
         print(f"  Skipped {len(skipped_orders)} orders (no customer resolved):")
         for oid, reason in skipped_orders:
             print(f"    order {oid}: {reason}")
+
+    # -- Status re-sync for existing open orders ---------------------------
+    # Without this, status/fulfilled_at were frozen at first ingest, so an
+    # order that was 'open' when first loaded stayed 'open' after it shipped.
+    # Only 'open' rows move; fulfilled/cancelled rows are never touched.
+    raw_by_id = {coerce(r["order_id"]): r for r in raw_orders}
+    cur.execute("""
+        SELECT order_id, source_order_id FROM core.orders
+        WHERE source = 'etsy' AND status = 'open'
+    """)
+    status_updates = []
+    for o in cur.fetchall():
+        raw = raw_by_id.get(o["source_order_id"])
+        if raw is None:
+            continue
+        new_status, fulfilled_at = derive_status(raw)
+        if new_status != "open":
+            status_updates.append((o["order_id"], o["source_order_id"], new_status, fulfilled_at))
+    print(f"Status re-sync: {len(status_updates)} open order(s) to update")
+    for core_id, src_id, new_status, fulfilled_at in status_updates:
+        print(f"  order {core_id} (receipt {src_id}): open -> {new_status}, fulfilled_at={fulfilled_at}")
+        if not dry_run:
+            cur.execute("""
+                UPDATE core.orders SET status = %s, fulfilled_at = %s
+                WHERE order_id = %s AND status = 'open'
+            """, (new_status, fulfilled_at, core_id))
 
     # Populate order_id_map for existing orders too
     if order_id_map or existing_orders:
